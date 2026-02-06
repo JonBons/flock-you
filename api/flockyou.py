@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 import json
 import csv
 import os
@@ -44,9 +44,16 @@ settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
 DATA_DIR = Path('data')
 CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
 SETTINGS_FILE = DATA_DIR / 'settings.json'
+EXPORTS_DIR = Path('exports')
 
-# Ensure data directory exists
+# Session file handles (for appending detections)
+session_csv_file = None
+session_kml_file = None
+session_file_base = None
+
+# Ensure data directories exist
 DATA_DIR.mkdir(exist_ok=True)
+EXPORTS_DIR.mkdir(exist_ok=True)
 
 # Persistent storage functions
 def load_cumulative_detections():
@@ -342,11 +349,178 @@ def validate_gps_data(gps_data):
     if not (-180 <= lon <= 180):
         return False, f"Invalid longitude: {lon}"
     
-    fix_quality = gps_data.get('fix_quality', 0)
+    fix_quality = gps_data.get('fix_quality', 1)
     if fix_quality < 1:
         return False, f"Poor GPS fix quality: {fix_quality}"
     
     return True, "Valid GPS data"
+
+
+def normalize_client_gps(data):
+    """Convert WebSocket client gps_update payload to gps_history format.
+    Client sends: { latitude, longitude, altitude?, timestamp (ISO or epoch), accuracy? }
+    """
+    lat = data.get('latitude')
+    lon = data.get('longitude')
+    if lat is None or lon is None:
+        return None
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return None
+    return {
+        'latitude': round(float(lat), 8),
+        'longitude': round(float(lon), 8),
+        'altitude': round(float(data.get('altitude', 0)), 3) if data.get('altitude') is not None else 0,
+        'timestamp': data.get('timestamp', ''),
+        'fix_quality': 1,
+        'satellites': 0,
+        'system_timestamp': time.time()
+    }
+
+CSV_FIELDNAMES = [
+    'timestamp', 'detection_time', 'server_timestamp', 'protocol', 'detection_method',
+    'ssid', 'device_name', 'mac_address', 'manufacturer', 'alias', 'rssi', 'last_rssi',
+    'signal_strength', 'channel', 'last_channel', 'detection_count',
+    'latitude', 'longitude', 'altitude', 'gps_timestamp', 'satellites', 'fix_quality', 'gps_time_diff', 'gps_match_quality', 'timestamp_source'
+]
+
+
+def _ensure_session_files():
+    """Create session CSV and KML files on first detection. Returns (csv_path, kml_path)."""
+    global session_csv_file, session_kml_file, session_file_base, session_start_time
+    if session_file_base is not None:
+        return (
+            str(EXPORTS_DIR / f"{session_file_base}.csv"),
+            str(EXPORTS_DIR / f"{session_file_base}.kml")
+        )
+    session_start_time = datetime.now()
+    session_file_base = f"session_{session_start_time.strftime('%Y%m%d_%H%M%S')}"
+    csv_path = str(EXPORTS_DIR / f"{session_file_base}.csv")
+    kml_path = str(EXPORTS_DIR / f"{session_file_base}.kml")
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+        writer.writeheader()
+        f.flush()
+    doc_name = f"Flock You Session Detections - {session_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+    kml_header = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+    <name>{doc_name}</name>
+    <description>Surveillance device detections with GPS coordinates</description>
+"""
+    with open(kml_path, 'w', encoding='utf-8') as f:
+        f.write(kml_header)
+        f.flush()
+    return csv_path, kml_path
+
+
+def _append_detection_to_csv(detection, csv_path):
+    """Append one detection row to session CSV."""
+    gps_data = detection.get('gps', {})
+    row = {
+        'timestamp': detection.get('timestamp'),
+        'detection_time': detection.get('detection_time'),
+        'server_timestamp': detection.get('server_timestamp'),
+        'protocol': detection.get('protocol'),
+        'detection_method': detection.get('detection_method'),
+        'ssid': detection.get('ssid', ''),
+        'device_name': detection.get('device_name', ''),
+        'mac_address': detection.get('mac_address'),
+        'manufacturer': detection.get('manufacturer', 'Unknown'),
+        'alias': detection.get('alias', ''),
+        'rssi': detection.get('rssi'),
+        'last_rssi': detection.get('last_rssi'),
+        'signal_strength': detection.get('signal_strength'),
+        'channel': detection.get('channel'),
+        'last_channel': detection.get('last_channel'),
+        'detection_count': detection.get('detection_count', 1),
+        'latitude': gps_data.get('latitude'),
+        'longitude': gps_data.get('longitude'),
+        'altitude': gps_data.get('altitude'),
+        'gps_timestamp': gps_data.get('timestamp'),
+        'satellites': gps_data.get('satellites'),
+        'fix_quality': gps_data.get('fix_quality'),
+        'gps_time_diff': gps_data.get('time_diff'),
+        'gps_match_quality': gps_data.get('match_quality'),
+        'timestamp_source': detection.get('timestamp_source', 'unknown')
+    }
+    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+        writer.writerow(row)
+        f.flush()
+
+
+def _append_placemark_to_kml(detection, kml_path):
+    """Append one Placemark to session KML (insert before closing tags)."""
+    gps = detection.get('gps', {})
+    if not gps.get('latitude') or not gps.get('longitude'):
+        return
+    placemark_name = detection.get('alias') or f"Detection {detection.get('id', '?')}"
+    gps_accuracy = ""
+    if gps.get('time_diff') is not None:
+        td = gps.get('time_diff')
+        if td < 5:
+            gps_accuracy = f" (✓ Precise: {td:.1f}s)"
+        elif td < 15:
+            gps_accuracy = f" (~ Good: {td:.1f}s)"
+        else:
+            gps_accuracy = f" (⚠ Approximate: {td:.1f}s)"
+    else:
+        gps_accuracy = " (? Unknown accuracy)"
+    device_info = ""
+    if detection.get('ssid'):
+        device_info += f"<b>SSID:</b> {detection.get('ssid')}<br/>"
+    if detection.get('device_name'):
+        device_info += f"<b>Device Name:</b> {detection.get('device_name')}<br/>"
+    rssi_info = detection.get('last_rssi') or detection.get('rssi', 'N/A')
+    channel_info = detection.get('last_channel') or detection.get('channel', 'N/A')
+    placemark = f"""
+    <Placemark>
+        <name>{placemark_name}</name>
+        <description>
+            <![CDATA[
+            <b>Protocol:</b> {detection.get('protocol')}<br/>
+            <b>Detection Method:</b> {detection.get('detection_method')}<br/>
+            {device_info}
+            <b>MAC Address:</b> {detection.get('mac_address')}<br/>
+            <b>Manufacturer:</b> {detection.get('manufacturer', 'Unknown')}<br/>
+            <b>Alias:</b> {detection.get('alias', 'None')}<br/>
+            <b>RSSI:</b> {rssi_info} dBm<br/>
+            <b>Signal Strength:</b> {detection.get('signal_strength', 'N/A')}<br/>
+            <b>Channel:</b> {channel_info}<br/>
+            <b>Detection Count:</b> {detection.get('detection_count', 1)}<br/>
+            <b>Detection Time:</b> {detection.get('detection_time', 'N/A')}<br/>
+            <b>Server Timestamp:</b> {detection.get('server_timestamp', 'N/A')}<br/>
+            <hr/>
+            <b>GPS Coordinates:</b> {gps.get('latitude'):.6f}, {gps.get('longitude'):.6f}{gps_accuracy}<br/>
+            <b>GPS Altitude:</b> {gps.get('altitude', 'N/A')} m<br/>
+            <b>GPS Satellites:</b> {gps.get('satellites', 'N/A')}<br/>
+            <b>GPS Fix Quality:</b> {gps.get('fix_quality', 'N/A')}<br/>
+            <b>GPS Match Quality:</b> {gps.get('match_quality', 'N/A')}<br/>
+            <b>GPS Timestamp:</b> {gps.get('timestamp', 'N/A')}<br/>
+            <b>Timestamp Source:</b> {detection.get('timestamp_source', 'Unknown').upper()}
+            ]]>
+        </description>
+        <Point>
+            <coordinates>{gps.get('longitude')},{gps.get('latitude')},{gps.get('altitude', 0)}</coordinates>
+        </Point>
+    </Placemark>
+"""
+    with open(kml_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    suffix = '\n</Document>\n</kml>\n'
+    if content.rstrip().endswith('</kml>'):
+        content = content.rstrip()[:-len('</kml>')].rstrip()
+        if content.endswith('</Document>'):
+            content = content[:-len('</Document>')].rstrip() + placemark + '\n</Document>\n'
+        else:
+            content = content + placemark + '\n</Document>\n'
+    else:
+        content = content.rstrip() + placemark + '\n</Document>\n'
+    content = content + '</kml>\n'
+    with open(kml_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+
 
 def add_detection_from_serial(data):
     """Add detection from serial data - counts detections per MAC address"""
@@ -462,6 +636,14 @@ def add_detection_from_serial(data):
                 break
         save_cumulative_detections()
         
+        # Append to session files
+        try:
+            csv_path, kml_path = _ensure_session_files()
+            _append_detection_to_csv(existing_detection, csv_path)
+            _append_placemark_to_kml(existing_detection, kml_path)
+        except Exception as e:
+            print(f"Session file append error: {e}")
+
         # Emit updated detection
         safe_socket_emit('detection_updated', existing_detection)
         print(f"Updated detection: MAC {mac_address}, Count: {existing_detection['detection_count']}, Method: {existing_detection.get('detection_method')}")
@@ -479,6 +661,14 @@ def add_detection_from_serial(data):
         # Add to cumulative detections
         cumulative_detections.append(data.copy())
         save_cumulative_detections()
+        
+        # Append to session files
+        try:
+            csv_path, kml_path = _ensure_session_files()
+            _append_detection_to_csv(data, csv_path)
+            _append_placemark_to_kml(data, kml_path)
+        except Exception as e:
+            print(f"Session file append error: {e}")
         
         # Emit to connected clients
         safe_socket_emit('new_detection', data)
@@ -627,9 +817,62 @@ def attempt_reconnect_gps():
     thread = threading.Thread(target=reconnect_thread, daemon=True)
     thread.start()
 
+def get_connect_url():
+    """Get the URL for phone to connect (http://<local-ip>:5000)."""
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 80))
+            addr = s.getsockname()[0]
+            if addr and not addr.startswith('127.'):
+                return f'http://{addr}:5000'
+        except Exception:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                addr = info[4][0]
+                if not addr.startswith('127.'):
+                    return f'http://{addr}:5000'
+        finally:
+            s.close()
+    except Exception:
+        pass
+    return 'http://localhost:5000'
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+@app.route('/connect')
+def connect_page():
+    """Connect page with large URL and QR code for phone to scan."""
+    return render_template('connect.html', connect_url=get_connect_url())
+
+
+@app.route('/api/connect-info')
+def api_connect_info():
+    """Return connect URL for clients."""
+    return jsonify({'url': get_connect_url()})
+
+
+@app.route('/api/qr')
+def api_qr():
+    """Return QR code image for connect URL."""
+    try:
+        import qrcode
+        import io
+        url = get_connect_url()
+        qr = qrcode.QRCode(version=1, box_size=8, border=2)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color='#1a1033', back_color='#e0e0e0')
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        return Response(buf.read(), mimetype='image/png')
+    except ImportError:
+        return jsonify({'error': 'qrcode not installed'}), 500
 
 @app.route('/api/detections', methods=['GET'])
 def get_detections():
@@ -967,10 +1210,11 @@ def export_kml():
 @app.route('/api/clear', methods=['POST'])
 def clear_detections():
     """Clear session detections"""
-    global detections, next_detection_id, session_start_time
+    global detections, next_detection_id, session_start_time, session_file_base
     detections.clear()
     next_detection_id = 1  # Reset ID counter
-    session_start_time = datetime.now()  # Reset session start time
+    session_start_time = datetime.now()
+    session_file_base = None  # Next detection will start a new session file
     safe_socket_emit('detections_cleared', {})
     return jsonify({'status': 'success', 'message': 'Session detections cleared'})
 
@@ -1247,6 +1491,33 @@ def send_heartbeat():
                 print(f"Heartbeat error: {e}")
                 time.sleep(5)
 
+@socketio.on('gps_update')
+def handle_gps_update(data):
+    """Handle GPS data from WebSocket client (phone Geolocation API).
+    Client sends: { latitude, longitude, altitude?, timestamp?, accuracy? }
+    """
+    global gps_history, gps_data
+    if not data or not isinstance(data, dict):
+        return
+    gps_entry = normalize_client_gps(data)
+    if gps_entry:
+        gps_history.append(gps_entry)
+        if len(gps_history) > MAX_GPS_HISTORY:
+            gps_history.pop(0)
+        gps_data = gps_entry
+
+
+def gps_poll_loop():
+    """Background task: emit request_gps to all clients every 5 seconds."""
+    with app.app_context():
+        while True:
+            time.sleep(5)
+            try:
+                socketio.emit('request_gps', {})
+            except Exception as e:
+                print(f"GPS poll emit error: {e}")
+
+
 @socketio.on('request_serial_terminal')
 def handle_serial_terminal_request(data):
     """Handle serial terminal connection request"""
@@ -1294,8 +1565,16 @@ if __name__ == '__main__':
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
     
+    # Start GPS poll loop (request_gps every 5s for WebSocket clients)
+    gps_poll_thread = threading.Thread(target=gps_poll_loop, daemon=True)
+    gps_poll_thread.start()
+    
     print("Starting Flock You API server...")
     print("Server will be available at: http://localhost:5000")
+    connect_url = get_connect_url()
+    if connect_url != 'http://localhost:5000':
+        print(f"Connect from phone: {connect_url}")
+        print("Or open http://localhost:5000/connect and scan the QR code")
     print("Press Ctrl+C to stop the server")
     
     try:

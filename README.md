@@ -98,6 +98,29 @@ GND         ---> Negative (-)
    pio device monitor
    ```
 
+### Wardriving Mode (Phone + Laptop + ESP32)
+
+For in-car wardriving with phone GPS (iPhone or Android):
+
+1. **Connect ESP32** to laptop via USB
+2. **Enable Personal Hotspot** on your phone:
+   - **iPhone**: Settings → Personal Hotspot
+   - **Android**: Settings → Network & internet → Hotspot & tethering → Wi‑Fi hotspot
+3. **Run setup** (from `api/` directory):
+   ```bash
+   python setup_wardriving.py --hotspot
+   ```
+   Or with auto-connect: `python setup_wardriving.py --ssid "My Phone" --password yourpassword`
+4. **Open connect page** on laptop: `http://localhost:5000/connect` — scan the QR code with your phone, or note the URL
+5. **Open that URL** in your phone's browser (Chrome, Safari, etc.); allow GPS when prompted
+6. **Disable display sleep** on your phone:
+   - **iPhone**: Settings → Display → Auto-Lock → Never
+   - **Android**: Settings → Display → Screen timeout → 30 minutes or Never
+7. **Connect Flock device** in the web UI (laptop or phone)
+8. **Session files** are written to `api/exports/session_YYYYMMDD_HHMMSS.csv` and `.kml`
+
+**Recommended setup:** If using CarPlay (iPhone) or Android Auto, use a wired USB connection so the phone's WiFi is free for hotspot. Maps on the car display; Flock You in the phone browser. Sleep inhibit runs automatically during the session.
+
 ## Detection Coverage
 
 ### WiFi Detection Methods

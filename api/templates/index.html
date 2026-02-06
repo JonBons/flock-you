@@ -78,6 +78,27 @@
             flex-shrink: 0;
         }
 
+        .display-sleep-tip {
+            background: rgba(139, 92, 246, 0.2);
+            border-bottom: 1px solid #8b5cf6;
+            padding: 0.5rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+        .display-sleep-tip .tip-dismiss {
+            background: transparent;
+            border: none;
+            color: #e0e0e0;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 0.25rem;
+            min-width: 28px;
+            min-height: 28px;
+        }
+
         @media (max-width: 1200px) {
             .flock-you-title {
                 font-size: 1.3rem;
@@ -684,6 +705,11 @@
             box-shadow: 0 0 8px rgba(220, 38, 38, 0.6);
         }
 
+        .status-text {
+            font-size: 0.85rem;
+            opacity: 0.9;
+        }
+
         .status-indicator.active {
             background: #10b981;
             box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
@@ -1274,6 +1300,10 @@
                 height: 28px;
                 font-size: 0.7rem;
             }
+            button:not(.refresh-btn):not(.tip-dismiss) {
+                min-height: 44px;
+                min-width: 44px;
+            }
         }
     </style>
 </head>
@@ -1312,6 +1342,16 @@
                         <button id="connectGpsBtn">Connect</button>
                         <button id="disconnectGpsBtn" class="danger" style="display: none;">Disconnect</button>
                     </div>
+                    <div class="device-control-group" title="WebSocket connection">
+                        <div class="status-indicator" id="wsStatus"></div>
+                        <label>Connected:</label>
+                        <span class="status-text" id="wsStatusText">—</span>
+                    </div>
+                    <div class="device-control-group" id="locationStatusGroup" title="Phone GPS (wardriving)">
+                        <div class="status-indicator" id="locationStatus"></div>
+                        <label>Location:</label>
+                        <span class="status-text" id="locationStatusText">—</span>
+                    </div>
                     
                     <div class="control-group">
                         <label>Filter:</label>
@@ -1334,6 +1374,11 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <div id="displaySleepTip" class="display-sleep-tip" style="display: none;">
+        <span>For best results, disable display sleep so GPS and WebSocket stay active: iPhone (Settings → Display → Auto-Lock → Never), Android (Settings → Display → Screen timeout → 30 min or Never).</span>
+        <button type="button" class="tip-dismiss" onclick="var t=document.getElementById('displaySleepTip');t.style.display='none';sessionStorage.setItem('displaySleepTipDismissed','1');" aria-label="Dismiss">×</button>
     </div>
 
     <div class="main-content">
@@ -1511,6 +1556,14 @@
             setupEventListeners();
             loadStatus();
             loadSettings();
+            requestGeolocationPermission();
+            updateWsStatus();
+            if ('ontouchstart' in window || window.innerWidth <= 768) {
+                const tip = document.getElementById('displaySleepTip');
+                if (tip && !sessionStorage.getItem('displaySleepTipDismissed')) {
+                    tip.style.display = 'flex';
+                }
+            }
             
             // Periodic status refresh every 5 seconds
             setInterval(loadStatus, 5000);
@@ -1532,6 +1585,15 @@
                 }
             }, 30000);
         });
+
+        function requestGeolocationPermission() {
+            if (!navigator.geolocation) return;
+            navigator.geolocation.getCurrentPosition(
+                function() { console.log('Geolocation permission granted'); },
+                function(err) { console.warn('Geolocation denied or error:', err.message); },
+                { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+            );
+        }
 
         function setupEventListeners() {
             document.getElementById('filterSelect').addEventListener('change', function() {
@@ -2056,16 +2118,28 @@
 
 
         // Socket connection events
+        function updateWsStatus() {
+            const ind = document.getElementById('wsStatus');
+            const txt = document.getElementById('wsStatusText');
+            if (ind && txt) {
+                ind.classList.toggle('active', socket.connected);
+                txt.textContent = socket.connected ? 'Yes' : 'No';
+            }
+        }
+
         socket.on('connect', function() {
             console.log('Socket connected');
+            updateWsStatus();
         });
 
         socket.on('disconnect', function() {
             console.log('Socket disconnected');
+            updateWsStatus();
         });
 
         socket.on('reconnect', function(attemptNumber) {
             console.log('Socket reconnected after', attemptNumber, 'attempts');
+            updateWsStatus();
             // Reload data after reconnection
             loadDetections();
             loadStatus();
@@ -2134,8 +2208,40 @@
             }
         });
 
-        socket.on('gps_update', function(gpsData) {
-            console.log('GPS Update:', gpsData);
+        let locationStatusTimeout = null;
+        function updateLocationStatus(active, text) {
+            const ind = document.getElementById('locationStatus');
+            const txt = document.getElementById('locationStatusText');
+            if (!ind || !txt) return;
+            ind.classList.toggle('active', active);
+            txt.textContent = text || (active ? 'Sending' : '—');
+        }
+
+        socket.on('request_gps', function() {
+            if (!navigator.geolocation) {
+                updateLocationStatus(false, 'Unsupported');
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                function(pos) {
+                    const payload = {
+                        latitude: pos.coords.latitude,
+                        longitude: pos.coords.longitude,
+                        altitude: pos.coords.altitude ?? null,
+                        timestamp: new Date().toISOString(),
+                        accuracy: pos.coords.accuracy ?? null
+                    };
+                    socket.emit('gps_update', payload);
+                    updateLocationStatus(true, 'Sending');
+                    if (locationStatusTimeout) clearTimeout(locationStatusTimeout);
+                    locationStatusTimeout = setTimeout(function() { updateLocationStatus(false, '—'); }, 12000);
+                },
+                function(err) {
+                    console.warn('GPS error:', err.message);
+                    updateLocationStatus(false, 'Denied');
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+            );
         });
 
         socket.on('gps_disconnected', function() {

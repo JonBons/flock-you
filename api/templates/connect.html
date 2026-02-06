@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect from Phone - Flock You</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #2d1b69 0%, #1a1033 50%, #4a1b69 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: #ec4899;
+        }
+        .connect-url {
+            font-size: 1.25rem;
+            font-family: monospace;
+            background: rgba(0,0,0,0.3);
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            word-break: break-all;
+            text-align: center;
+            border: 2px solid #8b5cf6;
+        }
+        .connect-url a {
+            color: #a78bfa;
+        }
+        .qr-container {
+            background: #fff;
+            padding: 1rem;
+            border-radius: 12px;
+            margin: 1.5rem 0;
+        }
+        .qr-container img {
+            display: block;
+        }
+        .hint {
+            font-size: 0.9rem;
+            opacity: 0.9;
+            margin-top: 1rem;
+            text-align: center;
+            max-width: 320px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Connect from Phone</h1>
+    <p>Open this URL in your phone's browser (Chrome, Safari, etc.):</p>
+    <div class="connect-url"><a href="{{ connect_url }}" id="url">{{ connect_url }}</a></div>
+    <p>Or scan the QR code with your phone camera:</p>
+    <div class="qr-container">
+        <img src="/api/qr" alt="QR code" width="200" height="200">
+    </div>
+    <p class="hint">Allow GPS when prompted. Disable display sleep for best results: iPhone (Settings → Display → Auto-Lock → Never), Android (Settings → Display → Screen timeout → 30 min or Never).</p>
+</body>
+</html>
