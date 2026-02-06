@@ -106,13 +106,13 @@ For in-car wardriving with phone GPS (iPhone or Android):
 2. **Enable Personal Hotspot** on your phone:
    - **iPhone**: Settings → Personal Hotspot
    - **Android**: Settings → Network & internet → Hotspot & tethering → Wi‑Fi hotspot
-3. **Run setup** (from `api/` directory):
+3. **Run setup** (from `api/` directory). Uses HTTPS by default (required for iOS location):
    ```bash
-   python setup_wardriving.py --hotspot
+   python setup_wardriving.py --hotspot --ssid "My Phone" --password yourpassword
    ```
-   Or with auto-connect: `python setup_wardriving.py --ssid "My Phone" --password yourpassword`
-4. **Open connect page** on laptop: `http://localhost:5000/connect` — scan the QR code with your phone, or note the URL
-5. **Open that URL** in your phone's browser (Chrome, Safari, etc.); allow GPS when prompted
+   Or: `python setup_wardriving.py --ssid "My Phone" --password yourpassword`. Use `--no-https` only if you don't need phone GPS.
+4. **Open connect page** on laptop: `https://localhost:5000/connect` — scan the QR code with your phone, or note the URL
+5. **Open that URL** in your phone's browser (Chrome, Safari, etc.). **iOS**: Accept the "connection not private" warning (tap Advanced → Proceed) — iOS requires HTTPS for location. Then allow GPS when prompted
 6. **Disable display sleep** on your phone:
    - **iPhone**: Settings → Display → Auto-Lock → Never
    - **Android**: Settings → Display → Screen timeout → 30 minutes or Never

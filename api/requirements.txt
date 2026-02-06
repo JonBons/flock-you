@@ -1,4 +1,5 @@
 Flask>=3.0.0
+pyOpenSSL>=23.0.0
 Flask-SocketIO>=5.3.6
 qrcode[pil]>=7.4.0
 python-socketio>=5.11.0

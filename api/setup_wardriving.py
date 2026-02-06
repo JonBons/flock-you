@@ -44,18 +44,22 @@ def enable_sleep_inhibit():
     return None
 
 
-def run_flock_with_sleep_inhibit():
-    """Run flockyou.py with sleep inhibit. On Linux uses systemd-inhibit; on Windows uses SetThreadExecutionState."""
+def run_flock_with_sleep_inhibit(use_https: bool = True):
+    """Run flockyou.py with sleep inhibit. On Linux uses systemd-inhibit; on Windows uses SetThreadExecutionState.
+    use_https: Enable HTTPS (required for iOS Safari geolocation).
+    """
+    flock_args = [sys.executable, FLOCKYOU_PY]
+    if use_https:
+        flock_args.insert(2, '--https')
     if sys.platform == 'linux':
         try:
             return subprocess.Popen(
-                ['systemd-inhibit', '--what=sleep:idle', '--who=Flock You', '--why=Wardriving session', sys.executable, FLOCKYOU_PY],
+                ['systemd-inhibit', '--what=sleep:idle', '--who=Flock You', '--why=Wardriving session'] + flock_args,
                 cwd=SCRIPT_DIR,
             )
         except FileNotFoundError:
             pass
-    # Fallback: run directly (Windows or Linux without systemd-inhibit)
-    return subprocess.Popen([sys.executable, FLOCKYOU_PY], cwd=SCRIPT_DIR)
+    return subprocess.Popen(flock_args, cwd=SCRIPT_DIR)
 
 
 def get_wifi_interface_linux():
@@ -270,6 +274,7 @@ def main():
     parser.add_argument('--interface', '-i', metavar='IFACE', help='WiFi interface (Linux only, e.g. wlan0)')
     parser.add_argument('--no-scan', action='store_true', help='Skip security scan (Windows); use WPA2-Personal. Use if network not in range yet.')
     parser.add_argument('--no-inhibit', action='store_true', help='Disable sleep inhibit (laptop may sleep during session)')
+    parser.add_argument('--no-https', action='store_true', help='Use HTTP instead of HTTPS (iOS needs HTTPS for location)')
     args = parser.parse_args()
 
     create_ap_proc = None
@@ -320,7 +325,11 @@ def main():
 
     os.chdir(SCRIPT_DIR)
     sleep_cleanup = None if args.no_inhibit else enable_sleep_inhibit()
-    flock_proc = run_flock_with_sleep_inhibit() if not args.no_inhibit else subprocess.Popen([sys.executable, FLOCKYOU_PY], cwd=SCRIPT_DIR)
+    use_https = not args.no_https
+    if args.no_inhibit:
+        flock_proc = subprocess.Popen([sys.executable, FLOCKYOU_PY] + (['--https'] if use_https else []), cwd=SCRIPT_DIR)
+    else:
+        flock_proc = run_flock_with_sleep_inhibit(use_https=use_https)
     try:
         flock_proc.wait()
     finally:

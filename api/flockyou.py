@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_file, Response
 import json
 import csv
 import os
+import sys
 from datetime import datetime
 import time
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -39,6 +40,9 @@ connection_lock = threading.Lock()
 serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
+
+# HTTPS mode: required for iOS Safari geolocation (iOS blocks location on HTTP)
+USE_HTTPS = False
 
 # Data storage paths
 DATA_DIR = Path('data')
@@ -818,7 +822,8 @@ def attempt_reconnect_gps():
     thread.start()
 
 def get_connect_url():
-    """Get the URL for phone to connect (http://<local-ip>:5000)."""
+    """Get the URL for phone to connect (http(s)://<local-ip>:5000)."""
+    scheme = 'https' if USE_HTTPS else 'http'
     try:
         import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -826,17 +831,17 @@ def get_connect_url():
             s.connect(('8.8.8.8', 80))
             addr = s.getsockname()[0]
             if addr and not addr.startswith('127.'):
-                return f'http://{addr}:5000'
+                return f'{scheme}://{addr}:5000'
         except Exception:
             for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
                 addr = info[4][0]
                 if not addr.startswith('127.'):
-                    return f'http://{addr}:5000'
+                    return f'{scheme}://{addr}:5000'
         finally:
             s.close()
     except Exception:
         pass
-    return 'http://localhost:5000'
+    return f'{scheme}://localhost:5000'
 
 
 @app.route('/')
@@ -1552,6 +1557,11 @@ def handle_serial_terminal_request(data):
         emit('serial_error', {'message': f'Failed to start terminal: {str(e)}'})
 
 if __name__ == '__main__':
+    global USE_HTTPS
+    if '--https' in sys.argv:
+        USE_HTTPS = True
+        sys.argv = [a for a in sys.argv if a != '--https']
+
     # Load data on startup
     load_oui_database()
     load_cumulative_detections()
@@ -1569,16 +1579,19 @@ if __name__ == '__main__':
     gps_poll_thread = threading.Thread(target=gps_poll_loop, daemon=True)
     gps_poll_thread.start()
     
+    ssl_ctx = 'adhoc' if USE_HTTPS else None
     print("Starting Flock You API server...")
-    print("Server will be available at: http://localhost:5000")
+    print("Server will be available at: " + ("https" if USE_HTTPS else "http") + "://localhost:5000")
     connect_url = get_connect_url()
-    if connect_url != 'http://localhost:5000':
+    if connect_url != ('https' if USE_HTTPS else 'http') + '://localhost:5000':
         print(f"Connect from phone: {connect_url}")
-        print("Or open http://localhost:5000/connect and scan the QR code")
+        print("Or open " + connect_url + "/connect and scan the QR code")
+    if USE_HTTPS:
+        print("(iOS: Accept the certificate warning to enable location)")
     print("Press Ctrl+C to stop the server")
-    
+
     try:
-        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True, ssl_context=ssl_ctx)
     except KeyboardInterrupt:
         print("\nShutting down server...")
         # Clean up connections
