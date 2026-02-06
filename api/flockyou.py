@@ -1557,7 +1557,6 @@ def handle_serial_terminal_request(data):
         emit('serial_error', {'message': f'Failed to start terminal: {str(e)}'})
 
 if __name__ == '__main__':
-    global USE_HTTPS
     if '--https' in sys.argv:
         USE_HTTPS = True
         sys.argv = [a for a in sys.argv if a != '--https']
