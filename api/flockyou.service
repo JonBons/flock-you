@@ -1,0 +1,23 @@
+[Unit]
+Description=Flock You API Server with BLE GPS Receiver
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/flock-you/api
+Environment="PATH=/opt/flock-you/api/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="AUTO_START_BLE_GPS=true"
+ExecStart=/opt/flock-you/api/venv/bin/python3 /opt/flock-you/api/flockyou.py --https --ble-gps
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

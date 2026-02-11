@@ -2802,11 +2802,11 @@
                 if (detection.gps.time_diff !== undefined && detection.gps.time_diff !== null) {
                     const timeDiff = detection.gps.time_diff;
                     if (timeDiff < 5) {
-                        gpsAccuracy = ` <span style="color: #22c55e;">✓ Precise (${timeDiff.toFixed(1)}s)</span>`;
+                        gpsAccuracy = ` <span style="color: #22c55e;">Precise (${timeDiff.toFixed(1)}s)</span>`;
                     } else if (timeDiff < 15) {
                         gpsAccuracy = ` <span style="color: #f59e0b;">~ Good (${timeDiff.toFixed(1)}s)</span>`;
                     } else {
-                        gpsAccuracy = ` <span style="color: #ef4444;">⚠ Approximate (${timeDiff.toFixed(1)}s)</span>`;
+                        gpsAccuracy = ` <span style="color: #ef4444;">Approximate (${timeDiff.toFixed(1)}s)</span>`;
                     }
                 } else {
                     gpsAccuracy = ` <span style="color: #6b7280;">? Unknown accuracy</span>`;

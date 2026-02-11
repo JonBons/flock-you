@@ -14,6 +14,14 @@ import uuid
 import pickle
 from pathlib import Path
 
+# BLE GPS Receiver (optional, only if bleak is available)
+try:
+    from ble_gps_receiver import start_ble_gps_receiver, stop_ble_gps_receiver, get_ble_gps_receiver
+    BLE_AVAILABLE = True
+except ImportError:
+    BLE_AVAILABLE = False
+    print("Warning: BLE GPS receiver not available (bleak library not installed)")
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'flockyou_dev_key_2024')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
@@ -40,6 +48,7 @@ connection_lock = threading.Lock()
 serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
+ble_gps_enabled = False  # BLE GPS connection status
 
 # HTTPS mode: required for iOS Safari geolocation (iOS blocks location on HTTP)
 USE_HTTPS = False
@@ -380,6 +389,75 @@ def normalize_client_gps(data):
         'system_timestamp': time.time()
     }
 
+def handle_ble_gps_update(ble_gps_data):
+    """
+    Callback function for BLE GPS receiver.
+    Integrates BLE GPS data into the existing GPS system.
+    
+    Args:
+        ble_gps_data: GPS data dict from BLE receiver
+    """
+    global gps_data, gps_history
+    
+    # Normalize the GPS data (already normalized by BLE receiver, but ensure format)
+    gps_entry = {
+        'latitude': ble_gps_data.get('latitude'),
+        'longitude': ble_gps_data.get('longitude'),
+        'altitude': ble_gps_data.get('altitude', 0),
+        'timestamp': ble_gps_data.get('timestamp', datetime.now().isoformat()),
+        'fix_quality': ble_gps_data.get('fix_quality', 1),
+        'satellites': ble_gps_data.get('satellites', 0),
+        'system_timestamp': ble_gps_data.get('system_timestamp', time.time()),
+        'accuracy': ble_gps_data.get('accuracy'),
+        'source': 'bluetooth'
+    }
+    
+    # Update global GPS data
+    gps_data = gps_entry
+    
+    # Add to GPS history for temporal matching
+    if gps_entry.get('fix_quality', 0) > 0:
+        gps_history.append(gps_entry)
+        
+        # Keep only recent GPS readings
+        if len(gps_history) > MAX_GPS_HISTORY:
+            gps_history.pop(0)
+        
+        # Emit GPS update to connected clients
+        safe_socket_emit('gps_update', gps_entry)
+        
+        # Log GPS update
+        print(f"BLE GPS: {gps_entry['latitude']:.6f}, {gps_entry['longitude']:.6f} "
+              f"(accuracy: {gps_entry.get('accuracy', 'N/A')}m)")
+
+def handle_ble_gps_connection_change(event_type: str, device_address: str, connected_count: int):
+    """
+    Callback function for BLE GPS connection changes.
+    Emits socket events and logs connection status.
+    
+    Args:
+        event_type: 'connected' or 'disconnected'
+        device_address: MAC address of the device
+        connected_count: Number of currently connected devices
+    """
+    global ble_gps_enabled
+    
+    if event_type == 'connected':
+        safe_socket_emit('ble_gps_connected', {
+            'device_address': device_address,
+            'connected_count': connected_count
+        })
+        print(f"BLE GPS: Device connected ({connected_count} total)")
+    elif event_type == 'disconnected':
+        safe_socket_emit('ble_gps_disconnected', {
+            'device_address': device_address,
+            'connected_count': connected_count,
+            'still_advertising': True  # Server continues advertising
+        })
+        print(f"BLE GPS: Device disconnected ({connected_count} remaining)")
+        if connected_count == 0:
+            print("  BLE GPS receiver still advertising - waiting for reconnection...")
+
 CSV_FIELDNAMES = [
     'timestamp', 'detection_time', 'server_timestamp', 'protocol', 'detection_method',
     'ssid', 'device_name', 'mac_address', 'manufacturer', 'alias', 'rssi', 'last_rssi',
@@ -463,11 +541,11 @@ def _append_placemark_to_kml(detection, kml_path):
     if gps.get('time_diff') is not None:
         td = gps.get('time_diff')
         if td < 5:
-            gps_accuracy = f" (✓ Precise: {td:.1f}s)"
+                gps_accuracy = f" (Precise: {td:.1f}s)"
         elif td < 15:
             gps_accuracy = f" (~ Good: {td:.1f}s)"
         else:
-            gps_accuracy = f" (⚠ Approximate: {td:.1f}s)"
+                gps_accuracy = f" (Approximate: {td:.1f}s)"
     else:
         gps_accuracy = " (? Unknown accuracy)"
     device_info = ""
@@ -556,11 +634,11 @@ def add_detection_from_serial(data):
             # Prefer GPS timestamp when available and accurate
             if time_diff < 5:  # Very close temporal match
                 preferred_timestamp = best_gps.get('timestamp')
-                print(f"✓ Using GPS timestamp for MAC {data.get('mac_address', 'unknown')}: {time_diff:.2f}s difference")
+                print(f"Using GPS timestamp for MAC {data.get('mac_address', 'unknown')}: {time_diff:.2f}s difference")
             else:
-                print(f"✓ GPS temporal match for MAC {data.get('mac_address', 'unknown')}: {time_diff:.2f}s difference")
+                print(f"GPS temporal match for MAC {data.get('mac_address', 'unknown')}: {time_diff:.2f}s difference")
         else:
-            print(f"⚠ Invalid GPS data for temporal match: {validation_msg}")
+            print(f"Invalid GPS data for temporal match: {validation_msg}")
             best_gps = None
     
     # Fallback to current GPS if no good temporal match
@@ -579,27 +657,27 @@ def add_detection_from_serial(data):
             }
             # Use current GPS timestamp if available
             preferred_timestamp = gps_data.get('timestamp')
-            print(f"○ Using current GPS timestamp for MAC {data.get('mac_address', 'unknown')} (no temporal match)")
+            print(f"Using current GPS timestamp for MAC {data.get('mac_address', 'unknown')} (no temporal match)")
         else:
-            print(f"⚠ Current GPS data invalid: {validation_msg}")
+            print(f"Current GPS data invalid: {validation_msg}")
     
     # Set timestamps - prefer GPS timestamp when available
     if preferred_timestamp:
         data['timestamp'] = preferred_timestamp
         data['detection_time'] = preferred_timestamp
         data['timestamp_source'] = 'gps'
-        print(f"📍 Using GPS timestamp as primary timestamp for {data.get('mac_address', 'unknown')}")
+        print(f"Using GPS timestamp as primary timestamp for {data.get('mac_address', 'unknown')}")
     else:
         # Fallback to system timestamps
         system_dt = datetime.fromtimestamp(system_time)
         data['timestamp'] = system_dt.isoformat()
         data['detection_time'] = system_dt.strftime('%Y-%m-%d %H:%M:%S')
         data['timestamp_source'] = 'system'
-        print(f"🕐 Using system timestamp for {data.get('mac_address', 'unknown')} (no GPS available)")
+        print(f"Using system timestamp for {data.get('mac_address', 'unknown')} (no GPS available)")
     
     # Log if no GPS could be assigned
     if not data.get('gps'):
-        print(f"✗ No valid GPS data available for MAC {data.get('mac_address', 'unknown')}")
+        print(f"No valid GPS data available for MAC {data.get('mac_address', 'unknown')}")
     
     # Add manufacturer information
     if 'mac_address' in data:
@@ -680,7 +758,7 @@ def add_detection_from_serial(data):
 
 def connection_monitor():
     """Background thread for monitoring device connections"""
-    global gps_enabled, flock_device_connected, serial_connection, reconnect_attempts
+    global gps_enabled, flock_device_connected, serial_connection, reconnect_attempts, ble_gps_enabled
     
     with app.app_context():
         while True:
@@ -703,6 +781,20 @@ def connection_monitor():
                         gps_enabled = False
                     safe_socket_emit('gps_disconnected', {})
                     attempt_reconnect_gps()
+            
+            # Check BLE GPS connection status
+            if ble_gps_enabled and BLE_AVAILABLE:
+                try:
+                    ble_receiver = get_ble_gps_receiver()
+                    if ble_receiver:
+                        is_connected = ble_receiver.is_connected()
+                        # Connection state is tracked via callbacks, but we can verify here
+                        if not ble_receiver.is_running:
+                            logger.warning("BLE GPS receiver stopped unexpectedly")
+                            # The server will handle restart via systemd if configured
+                except Exception as e:
+                    # Don't spam errors if BLE receiver isn't available
+                    pass
             
             # Check Flock You device connection
             if flock_device_connected:
@@ -966,6 +1058,94 @@ def disconnect_gps():
     
     return jsonify({'status': 'success', 'message': 'GPS disconnected'})
 
+@app.route('/api/ble-gps/connect', methods=['POST'])
+def connect_ble_gps():
+    """Start BLE GPS receiver"""
+    global ble_gps_enabled
+    
+    if not BLE_AVAILABLE:
+        return jsonify({
+            'status': 'error',
+            'message': 'BLE GPS not available. Install bleak library: pip install bleak'
+        }), 400
+    
+    if ble_gps_enabled:
+        return jsonify({
+            'status': 'success',
+            'message': 'BLE GPS receiver already running'
+        })
+    
+        try:
+            success = start_ble_gps_receiver(
+                gps_callback=handle_ble_gps_update,
+                connection_callback=handle_ble_gps_connection_change
+            )
+            if success:
+                ble_gps_enabled = True
+                safe_socket_emit('ble_gps_connected', {})
+                return jsonify({
+                    'status': 'success',
+                    'message': 'BLE GPS receiver started. Waiting for GPS2IP connection...'
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Failed to start BLE GPS receiver'
+                }), 500
+        except Exception as e:
+            return jsonify({
+                'status': 'error',
+                'message': f'Error starting BLE GPS receiver: {str(e)}'
+            }), 500
+
+@app.route('/api/ble-gps/disconnect', methods=['POST'])
+def disconnect_ble_gps():
+    """Stop BLE GPS receiver"""
+    global ble_gps_enabled
+    
+    try:
+        stop_ble_gps_receiver()
+        ble_gps_enabled = False
+        safe_socket_emit('ble_gps_disconnected', {})
+        return jsonify({
+            'status': 'success',
+            'message': 'BLE GPS receiver stopped'
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Error stopping BLE GPS receiver: {str(e)}'
+        }), 500
+
+@app.route('/api/ble-gps/status', methods=['GET'])
+def get_ble_gps_status():
+    """Get BLE GPS receiver status"""
+    if not BLE_AVAILABLE:
+        return jsonify({
+            'available': False,
+            'enabled': False,
+            'connected': False,
+            'connected_devices': 0
+        })
+    
+    ble_receiver = get_ble_gps_receiver()
+    if not ble_receiver:
+        return jsonify({
+            'available': True,
+            'enabled': False,
+            'connected': False,
+            'connected_devices': 0
+        })
+    
+    latest_gps = ble_receiver.get_latest_gps()
+    return jsonify({
+        'available': True,
+        'enabled': ble_gps_enabled,
+        'connected': ble_receiver.is_connected(),
+        'connected_devices': len(ble_receiver.connected_devices),
+        'latest_gps': latest_gps
+    })
+
 @app.route('/api/flock/connect', methods=['POST'])
 def connect_flock():
     """Connect to Flock You device"""
@@ -1007,9 +1187,15 @@ def disconnect_flock():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get connection status of both devices"""
+    ble_receiver = get_ble_gps_receiver() if BLE_AVAILABLE else None
     return jsonify({
         'gps_connected': gps_enabled,
         'gps_port': serial_connection.port if serial_connection else None,
+        'gps_type': 'serial',
+        'ble_gps_available': BLE_AVAILABLE,
+        'ble_gps_enabled': ble_gps_enabled,
+        'ble_gps_connected': ble_receiver.is_connected() if ble_receiver else False,
+        'ble_gps_connected_devices': len(ble_receiver.connected_devices) if ble_receiver else 0,
         'flock_connected': flock_device_connected,
         'flock_port': flock_device_port
     })
@@ -1029,6 +1215,40 @@ def get_gps_ports():
         }
         ports.append(port_info)
     return jsonify(ports)
+
+def find_first_jtag_port():
+    """Return the first serial port whose name (description, product, manufacturer, or device) contains 'JTAG'."""
+    for port in serial.tools.list_ports.comports():
+        name_parts = [
+            port.description or '',
+            port.product or '',
+            port.manufacturer or '',
+            port.device or ''
+        ]
+        if any('JTAG' in (p or '').upper() for p in name_parts):
+            return port.device
+    return None
+
+
+def auto_connect_jtag_flock():
+    """Attempt to connect to the first detected serial device with 'JTAG' in its name."""
+    global flock_device_connected, flock_device_port, flock_serial_connection
+    port = find_first_jtag_port()
+    if not port:
+        return False
+    try:
+        flock_serial_connection = serial.Serial(port, 115200, timeout=1)
+        with connection_lock:
+            flock_device_connected = True
+        flock_device_port = port
+        flock_thread = threading.Thread(target=flock_reader, daemon=True)
+        flock_thread.start()
+        print(f"Auto-connected to Flock device on {port} (JTAG)")
+        return True
+    except Exception as e:
+        print(f"Auto-connect to JTAG device failed ({port}): {e}")
+        return False
+
 
 @app.route('/api/flock/ports', methods=['GET'])
 def get_flock_ports():
@@ -1149,11 +1369,11 @@ def export_kml():
             if gps.get('time_diff') is not None:
                 time_diff = gps.get('time_diff')
                 if time_diff < 5:
-                    gps_accuracy = f" (✓ Precise: {time_diff:.1f}s)"
+                    gps_accuracy = f" (Precise: {time_diff:.1f}s)"
                 elif time_diff < 15:
                     gps_accuracy = f" (~ Good: {time_diff:.1f}s)"
                 else:
-                    gps_accuracy = f" (⚠ Approximate: {time_diff:.1f}s)"
+                    gps_accuracy = f" (Approximate: {time_diff:.1f}s)"
             else:
                 gps_accuracy = " (? Unknown accuracy)"
             
@@ -1560,6 +1780,12 @@ if __name__ == '__main__':
     if '--https' in sys.argv:
         USE_HTTPS = True
         sys.argv = [a for a in sys.argv if a != '--https']
+    
+    # Check if BLE GPS should auto-start (environment variable or --ble-gps flag)
+    auto_start_ble = os.environ.get('AUTO_START_BLE_GPS', 'false').lower() == 'true'
+    if '--ble-gps' in sys.argv:
+        auto_start_ble = True
+        sys.argv = [a for a in sys.argv if a != '--ble-gps']
 
     # Load data on startup
     load_oui_database()
@@ -1578,6 +1804,32 @@ if __name__ == '__main__':
     gps_poll_thread = threading.Thread(target=gps_poll_loop, daemon=True)
     gps_poll_thread.start()
     
+    # Auto-start BLE GPS receiver if enabled
+    if auto_start_ble and BLE_AVAILABLE:
+        print("Auto-starting BLE GPS receiver...")
+        try:
+            success = start_ble_gps_receiver(
+                gps_callback=handle_ble_gps_update,
+                connection_callback=handle_ble_gps_connection_change
+            )
+            if success:
+                global ble_gps_enabled
+                ble_gps_enabled = True
+                print("BLE GPS receiver started and advertising (GPS2IP compatible)")
+                print("  Will automatically accept reconnections when devices disconnect")
+            else:
+                print("Failed to start BLE GPS receiver (will continue without it)")
+        except Exception as e:
+            print(f"Error starting BLE GPS receiver: {e} (will continue without it)")
+    elif auto_start_ble and not BLE_AVAILABLE:
+        print("BLE GPS auto-start requested but bleak library not available")
+    
+    # Auto-connect to first serial device with JTAG in its name (Flock sniffer)
+    if not flock_device_connected:
+        auto_connect_jtag_flock()
+    if flock_device_connected:
+        print(f"Flock device connected on {flock_device_port}")
+    
     ssl_ctx = 'adhoc' if USE_HTTPS else None
     print("Starting Flock You API server...")
     print("Server will be available at: " + ("https" if USE_HTTPS else "http") + "://localhost:5000")
@@ -1587,6 +1839,8 @@ if __name__ == '__main__':
         print("Or open " + connect_url + "/connect and scan the QR code")
     if USE_HTTPS:
         print("(iOS: Accept the certificate warning to enable location)")
+    if auto_start_ble and ble_gps_enabled:
+        print("BLE GPS receiver is running - GPS2IP apps can connect now!")
     print("Press Ctrl+C to stop the server")
 
     try:
