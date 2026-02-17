@@ -1,0 +1,59 @@
+# hostapd, dnsmasq, button/AP daemon (GPIO toggle + long-press shutdown)
+- name: Install hostapd dnsmasq and Python GPIO
+  ansible.builtin.apt:
+    name:
+      - hostapd
+      - dnsmasq
+      - python3-gpiozero
+    state: present
+
+- name: Configure hostapd
+  ansible.builtin.template:
+    src: hostapd.conf.j2
+    dest: /etc/hostapd/hostapd.conf
+    mode: "0600"
+
+- name: Set hostapd daemon config
+  ansible.builtin.lineinfile:
+    path: /etc/default/hostapd
+    regexp: '^#?DAEMON_CONF='
+    line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
+  register: hostapd_default
+
+- name: Configure dnsmasq for AP (only when interface is up)
+  ansible.builtin.template:
+    src: dnsmasq_ap.conf.j2
+    dest: /etc/dnsmasq.d/flockyou-ap.conf
+    mode: "0644"
+
+- name: Disable dnsmasq from main config (we start it manually with -x for AP)
+  ansible.builtin.lineinfile:
+    path: /etc/dnsmasq.conf
+    insertafter: '^#.*listen-address'
+    line: "listen-address=127.0.0.1"
+  when: false  # Skip - we'll start dnsmasq with -C and -i in daemon; main dnsmasq may conflict
+
+- name: Deploy button/AP daemon script
+  ansible.builtin.template:
+    src: button_ap_daemon.py.j2
+    dest: "{{ app_root }}/setup/button_ap_daemon.py"
+    mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Install flock-you-button-ap systemd unit
+  ansible.builtin.template:
+    src: flock_you_button_ap.service.j2
+    dest: /etc/systemd/system/flock-you-button-ap.service
+    mode: "0644"
+
+- name: Enable and start button/AP daemon
+  ansible.builtin.systemd:
+    name: flock-you-button-ap
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Set timezone
+  ansible.builtin.command: timedatectl set-timezone "{{ timezone }}"
+  changed_when: true

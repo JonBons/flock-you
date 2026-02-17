@@ -1,0 +1,8 @@
+# Replace flock_pi with your Pi's hostname or IP.
+# Ensure SSH and Wi-Fi are enabled and your user can sudo.
+all:
+  hosts:
+    flock_pi:
+      ansible_host: 192.168.1.100  # or flock-pi.local, or your Pi's IP
+      ansible_user: pi              # your username on the Pi
+      # ansible_ssh_private_key_file: ~/.ssh/id_ed25519  # optional

@@ -1,0 +1,6 @@
+#!/bin/bash
+# Check API health; restart flock-you-api on failure (run by systemd timer)
+URL="http://127.0.0.1:{{ flask_port }}/api/health"
+if ! curl -sf --max-time 5 "$URL" > /dev/null; then
+    systemctl restart flock-you-api
+fi

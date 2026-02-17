@@ -1,0 +1,16 @@
+[Unit]
+Description=Flock You API (Flask + SocketIO)
+After=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+WorkingDirectory={{ app_root }}/api
+ExecStart={{ app_root }}/api/venv/bin/python flockyou.py
+Restart=always
+RestartSec=5
+Environment=PATH={{ app_root }}/api/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SECRET_KEY={{ secret_key | default('flockyou-dev-key-change-in-production') }}
+
+[Install]
+WantedBy=multi-user.target

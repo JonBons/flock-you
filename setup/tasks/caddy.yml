@@ -1,0 +1,49 @@
+# Install Caddy, config with tls internal and reverse_proxy to Flask
+- name: Install dependencies for Caddy repo
+  ansible.builtin.apt:
+    name:
+      - debian-keyring
+      - debian-archive-keyring
+      - apt-transport-https
+      - curl
+    state: present
+
+- name: Add Caddy GPG key
+  ansible.builtin.shell: |
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+- name: Add Caddy apt list
+  ansible.builtin.get_url:
+    url: "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt"
+    dest: /etc/apt/sources.list.d/caddy-stable.list
+    mode: "0644"
+
+- name: Ensure keyring and list readable
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0644"
+    state: touch
+  loop:
+    - /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    - /etc/apt/sources.list.d/caddy-stable.list
+
+- name: Install Caddy package
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+    update_cache: true
+
+- name: Create Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    mode: "0644"
+
+- name: Enable and start Caddy
+  ansible.builtin.systemd:
+    name: caddy
+    state: started
+    enabled: true
+    daemon_reload: true

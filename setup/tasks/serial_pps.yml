@@ -1,0 +1,76 @@
+# Serial (UART for GPS) and PPS on GPIO18. Requires reboot after.
+- name: Ensure boot config directory exists (Bookworm vs older)
+  ansible.builtin.stat:
+    path: /boot/firmware
+  register: boot_firmware
+  changed_when: false
+
+- name: Set boot path (Bookworm has /boot/firmware)
+  ansible.builtin.set_fact:
+    boot_config_dir: "/boot/firmware"
+  when: boot_firmware.stat.exists
+
+- name: Set boot path (older OS)
+  ansible.builtin.set_fact:
+    boot_config_dir: "/boot"
+  when: not boot_firmware.stat.exists
+
+- name: Enable UART in config.txt
+  ansible.builtin.lineinfile:
+    path: "{{ boot_config_dir }}/config.txt"
+    line: "enable_uart=1"
+    create: false
+  register: uart_line
+
+- name: Add PPS GPIO18 overlay
+  ansible.builtin.lineinfile:
+    path: "{{ boot_config_dir }}/config.txt"
+    line: "dtoverlay=pps-gpio,gpiopin=18"
+    create: false
+  register: pps_line
+
+- name: Remove serial console from cmdline
+  ansible.builtin.replace:
+    path: "{{ boot_config_dir }}/cmdline.txt"
+    regexp: 'console=(serial0|ttyAMA0|ttyS0)[^ ]*'
+    replace: ''
+  when: boot_config_dir == "/boot/firmware"
+
+- name: Remove serial console from cmdline (legacy path)
+  ansible.builtin.replace:
+    path: "{{ boot_config_dir }}/cmdline.txt"
+    regexp: 'console=(serial0|ttyAMA0|ttyS0)[^ ]*'
+    replace: ''
+  when: boot_config_dir == "/boot"
+
+- name: Install pps-tools chrony gpsd
+  ansible.builtin.apt:
+    name:
+      - pps-tools
+      - chrony
+      - gpsd
+    state: present
+    update_cache: true
+
+- name: Configure gpsd to use serial0
+  ansible.builtin.template:
+    src: gpsd_default.j2
+    dest: /etc/default/gpsd
+  notify: restart gpsd
+
+- name: Configure chrony refclocks (SHM + PPS)
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+  notify: restart chrony
+
+- name: Flush handlers so gpsd/chrony restart before reboot
+  ansible.builtin.meta: flush_handlers
+  when: uart_line.changed or pps_line.changed
+
+- name: Reboot to apply serial and PPS
+  ansible.builtin.reboot:
+    msg: "Serial and PPS config applied"
+    connect_timeout: 5
+    reboot_timeout: 120
+  when: uart_line.changed or pps_line.changed

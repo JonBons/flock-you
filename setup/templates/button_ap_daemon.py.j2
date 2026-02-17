@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""
+Flock You enclosure button daemon.
+- Short press: toggle WiFi AP (hostapd + dnsmasq).
+- Long press ({{ long_press_seconds }}s): clean shutdown (stop services, then halt).
+Runs as root so it can start/stop hostapd and shutdown.
+"""
+import os
+import subprocess
+import time
+import signal
+import sys
+
+GPIO_PIN = {{ button_gpio }}
+LONG_PRESS_SEC = {{ long_press_seconds }}
+HOSTAPD_CONF = "/etc/hostapd/hostapd.conf"
+DNSMASQ_AP_CONF = "/etc/dnsmasq.d/flockyou-ap.conf"
+AP_INTERFACE = "{{ ap_interface }}"
+
+try:
+    from gpiozero import Button
+except ImportError:
+    print("gpiozero not installed", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(cmd, check=True):
+    return subprocess.run(cmd, shell=True, check=check, capture_output=True, timeout=10)
+
+
+def ap_running():
+    try:
+        run("systemctl is-active --quiet hostapd", check=False)
+        return True
+    except Exception:
+        return False
+
+
+def ap_start():
+    if ap_running():
+        return
+    # Bring up interface with static IP (handled by hostapd or we set it)
+    run(f"ip addr add {{ ap_ip }}/24 dev {AP_INTERFACE} 2>/dev/null || true", check=False)
+    run("systemctl start hostapd")
+    run(f"dnsmasq -C {DNSMASQ_AP_CONF} -i {AP_INTERFACE} --pid-file=/run/dnsmasq-ap.pid", check=False)
+    run("systemctl start flock-you-api")  # ensure API is up
+
+
+def ap_stop():
+    run("systemctl stop hostapd", check=False)
+    try:
+        with open("/run/dnsmasq-ap.pid") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    run(f"ip addr flush dev {AP_INTERFACE}", check=False)
+
+
+def shutdown_system():
+    run("systemctl stop flock-you-api")
+    run("systemctl stop caddy", check=False)
+    ap_stop()
+    run("sync")
+    run("systemctl poweroff")
+
+
+long_press_triggered = False
+
+
+def on_held():
+    global long_press_triggered
+    long_press_triggered = True
+    shutdown_system()
+
+
+def on_released():
+    global long_press_triggered
+    if long_press_triggered:
+        return
+    time.sleep(0.05)
+    if ap_running():
+        ap_stop()
+    else:
+        ap_start()
+
+
+def main():
+    button = Button(GPIO_PIN, pull_up=True, hold_time=LONG_PRESS_SEC)
+    button.when_held = on_held
+    button.when_released = on_released
+    signal.pause()
+
+
+if __name__ == "__main__":
+    main()

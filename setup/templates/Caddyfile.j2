@@ -1,0 +1,9 @@
+# Flock You - self-signed only, no ACME. HTTP -> HTTPS redirect.
+:{{ caddy_http_port }} {
+    redir https://{host}{uri} permanent
+}
+
+:{{ caddy_https_port }} {
+    tls internal
+    reverse_proxy localhost:{{ flask_port }}
+}

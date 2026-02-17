@@ -748,6 +748,86 @@
             font-style: italic;
         }
 
+        .health-line {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.35rem 1rem;
+            background: rgba(26, 16, 51, 0.6);
+            border-radius: 6px;
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .health-line span {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .health-ok { color: #34d399; }
+        .health-warn { color: #fbbf24; }
+        .health-bad { color: #f87171; }
+
+        .stored-detections {
+            background: rgba(45, 27, 105, 0.8);
+            border: 1px solid #8b5cf6;
+            border-radius: 12px;
+            margin-top: 1rem;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        .stored-detections-header {
+            background: rgba(26, 16, 51, 0.9);
+            padding: 1rem;
+            border-bottom: 1px solid #8b5cf6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        .stored-detections-header h2 {
+            color: #c084fc;
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin: 0;
+        }
+        .stored-files-list {
+            padding: 1rem;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+        .stored-file-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0.75rem;
+            background: rgba(26, 16, 51, 0.5);
+            border: 1px solid #6d28d9;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .stored-file-date { font-weight: 600; color: #e0e0e0; }
+        .stored-file-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .stored-file-actions a, .stored-file-actions button {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        .stored-file-actions button.danger { padding: 0.25rem 0.5rem; }
+        .stored-placeholder {
+            color: #6b7280;
+            font-style: italic;
+            text-align: center;
+            padding: 1.5rem;
+        }
+        .session-label {
+            font-size: 0.75rem;
+            color: #9ca3af;
+            margin-top: 0.15rem;
+        }
+
         .detections-container {
             background: rgba(45, 27, 105, 0.8);
             border-radius: 12px;
@@ -1337,11 +1417,16 @@
     </div>
 
     <div class="main-content">
+        <div class="health-line" id="healthLine" style="display: none;">
+            <span id="healthGps">GPS: —</span>
+            <span id="healthPps">PPS: —</span>
+        </div>
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-number" id="totalDetections">0</div>
                 <div class="stat-label">Session Detections</div>
-                <div class="stat-hint">(Hover for cumulative)</div>
+                <div class="stat-hint">Current session (in memory)</div>
+                <div class="session-label">Hover for cumulative; saved today → Daily logs below</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="wifiDetections">0</div>
@@ -1362,7 +1447,7 @@
 
         <div class="detections-container">
             <div class="detections-header">
-                <h2>Detections</h2>
+                <h2>Detections <span class="session-label">(current session)</span></h2>
                 <div class="export-buttons">
                     <div class="detection-search-group">
                         <input type="text" id="detectionSearchInput" class="detection-search-input" placeholder="Search detections..." onkeyup="searchDetections()">
@@ -1384,6 +1469,16 @@
                     <h3>No detections yet</h3>
                     <p>Start scanning with your Flock You device to see detections here</p>
                 </div>
+            </div>
+        </div>
+
+        <div class="stored-detections">
+            <div class="stored-detections-header">
+                <h2>Daily logs (stored by date)</h2>
+                <button class="refresh-btn" onclick="loadStoredFiles()" title="Refresh list">↻</button>
+            </div>
+            <div class="stored-files-list" id="storedFilesList">
+                <div class="stored-placeholder">Loading…</div>
             </div>
         </div>
 
@@ -1511,9 +1606,12 @@
             setupEventListeners();
             loadStatus();
             loadSettings();
+            loadStoredFiles();
+            loadHealth();
             
             // Periodic status refresh every 5 seconds
             setInterval(loadStatus, 5000);
+            setInterval(loadHealth, 5000);
             
             // Periodic port refresh every 30 seconds (reduced from 10 seconds)
             setInterval(function() {
@@ -1869,6 +1967,73 @@
                 })
                 .catch(error => {
                     console.error('Error loading status:', error);
+                });
+        }
+
+        function loadHealth() {
+            fetch('/api/health')
+                .then(response => response.json())
+                .then(data => {
+                    const line = document.getElementById('healthLine');
+                    const gpsEl = document.getElementById('healthGps');
+                    const ppsEl = document.getElementById('healthPps');
+                    if (!line || !gpsEl || !ppsEl) return;
+                    line.style.display = 'flex';
+                    const gpsConnected = data.gps && data.gps.connected;
+                    const gpsFix = data.gps && data.gps.fix;
+                    const ppsLocked = data.pps && data.pps.locked;
+                    gpsEl.textContent = 'GPS: ' + (gpsConnected ? (gpsFix ? 'Fix ✓' : 'No fix') : '—');
+                    gpsEl.className = gpsConnected && gpsFix ? 'health-ok' : (gpsConnected ? 'health-warn' : 'health-bad');
+                    ppsEl.textContent = 'PPS: ' + (ppsLocked ? 'Locked ✓' : '—');
+                    ppsEl.className = ppsLocked ? 'health-ok' : 'health-bad';
+                })
+                .catch(() => {
+                    const line = document.getElementById('healthLine');
+                    if (line) line.style.display = 'none';
+                });
+        }
+
+        function loadStoredFiles() {
+            const listEl = document.getElementById('storedFilesList');
+            if (!listEl) return;
+            fetch('/api/detections/files')
+                .then(response => response.json())
+                .then(data => {
+                    const files = data.files || [];
+                    if (files.length === 0) {
+                        listEl.innerHTML = '<div class="stored-placeholder">No stored daily files yet</div>';
+                        return;
+                    }
+                    listEl.innerHTML = files.map(f => {
+                        const path = f.path;
+                        const date = f.date;
+                        return `<div class="stored-file-row">
+                            <span class="stored-file-date">${date}</span>
+                            <div class="stored-file-actions">
+                                <a href="/api/detections/files/${path}?format=csv" class="export-btn" download>CSV</a>
+                                <a href="/api/detections/files/${path}?format=kml" class="map-btn" download>KML</a>
+                                <button class="danger stored-file-delete" onclick="deleteStoredFile('${date}', '${path}')">Delete</button>
+                            </div>
+                        </div>`;
+                    }).join('');
+                })
+                .catch(err => {
+                    console.error('Error loading stored files:', err);
+                    listEl.innerHTML = '<div class="stored-placeholder">Failed to load list</div>';
+                });
+        }
+
+        function deleteStoredFile(dateStr, path) {
+            if (!confirm('Delete stored file for ' + dateStr + '? This cannot be undone.')) return;
+            fetch('/api/detections/files/' + path, { method: 'DELETE' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') loadStoredFiles();
+                    else alert('Delete failed: ' + (data.message || 'Unknown error'));
+                })
+                .catch(err => {
+                    console.error('Delete error:', err);
+                    alert('Delete failed: ' + err.message);
                 });
         }
 

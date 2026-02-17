@@ -1,0 +1,37 @@
+# Shared config: Ansible and (deployed) API use these values.
+# Override in group_vars/flock_pi.yml or via -e for secrets.
+
+# Repo and app path
+repo_url: "https://github.com/your-username/flock-you.git"  # or SSH URL
+repo_version: main
+app_root: "/home/{{ ansible_user }}/flock-you"
+
+# Network and services
+flask_port: 5000
+caddy_https_port: 443
+caddy_http_port: 80
+# Hostname or IP Caddy listens on (e.g. for tls internal). Use IP or flock-pi.local.
+caddy_server_name: "192.168.4.1"  # AP IP when using Pi as hotspot; or use actual hostname
+
+# Paths (relative to app_root/api when deployed)
+daily_detections_dir: "data/detections"
+storage_quota_days: 90
+storage_quota_mb: 500
+
+# Time and PPS
+timezone: "UTC"
+
+# Button/AP daemon (GPIO BCM numbering)
+button_gpio: 17
+long_press_seconds: 3
+
+# WiFi AP (for enclosure button toggle)
+ap_ssid: "FlockYou-Config"
+ap_passphrase: "flockyou-config"   # Override with -e ap_passphrase=yourpass or vault
+ap_interface: "wlan0"
+ap_ip: "192.168.4.1"
+ap_netmask: "255.255.255.0"
+ap_dhcp_range: "192.168.4.10,192.168.4.50,24h"
+
+# Optional: secret key for Flask (set via vault or -e in production)
+# secret_key: "change-me-in-production"

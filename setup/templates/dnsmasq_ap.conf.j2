@@ -1,0 +1,5 @@
+# Used when AP is on - daemon starts dnsmasq with this config
+interface={{ ap_interface }}
+bind-interfaces
+dhcp-range={{ ap_dhcp_range }}
+dhcp-option=3,{{ ap_ip }}

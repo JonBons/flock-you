@@ -1,0 +1,7 @@
+[Unit]
+Description=Flock You API watchdog check
+After=network.target flock-you-api.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/flock-you-watchdog.sh

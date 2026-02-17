@@ -1,0 +1,14 @@
+[Unit]
+Description=Flock You button/AP daemon (toggle WiFi AP, long-press shutdown)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart={{ app_root }}/setup/button_ap_daemon.py
+Restart=always
+RestartSec=5
+Environment=APP_ROOT={{ app_root }}
+
+[Install]
+WantedBy=multi-user.target

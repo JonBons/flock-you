@@ -1,0 +1,61 @@
+# Clone repo, venv, daily storage dir, systemd unit for Flask API
+- name: Ensure app root parent exists
+  ansible.builtin.file:
+    path: "{{ app_root | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Clone repository
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_root }}"
+    version: "{{ repo_version }}"
+    force: false
+    update: true
+  register: git_clone
+
+- name: Ensure app_root owned by ansible_user
+  ansible.builtin.file:
+    path: "{{ app_root }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    recurse: true
+
+- name: Create Python venv
+  ansible.builtin.pip:
+    name: -r "{{ app_root }}/api/requirements.txt"
+    virtualenv: "{{ app_root }}/api/venv"
+    virtualenv_command: "python3 -m venv"
+    state: present
+  become_user: "{{ ansible_user }}"
+  become: true
+
+- name: Ensure daily detections directory exists
+  ansible.builtin.file:
+    path: "{{ app_root }}/api/{{ daily_detections_dir }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Deploy API config.yml from vars
+  ansible.builtin.template:
+    src: api_config.yml.j2
+    dest: "{{ app_root }}/api/config.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+
+- name: Install flock-you-api systemd unit
+  ansible.builtin.template:
+    src: flock_you_api.service.j2
+    dest: /etc/systemd/system/flock-you-api.service
+    mode: "0644"
+
+- name: Enable and start flock-you-api
+  ansible.builtin.systemd:
+    name: flock-you-api
+    state: started
+    enabled: true
+    daemon_reload: true

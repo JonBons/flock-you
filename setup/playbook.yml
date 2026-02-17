@@ -1,0 +1,32 @@
+---
+# Flock You - Raspberry Pi Zero 2 W full setup
+# Prerequisites: Pi on network, SSH + user, inventory set. Then:
+#   cd setup && ansible-playbook -i inventory.yml playbook.yml
+- name: Serial, PPS, gpsd, chrony
+  hosts: all
+  handlers:
+    - name: restart gpsd
+      ansible.builtin.systemd:
+        name: gpsd
+        state: restarted
+    - name: restart chrony
+      ansible.builtin.systemd:
+        name: chrony
+        state: restarted
+  tasks:
+    - ansible.builtin.include_tasks: tasks/serial_pps.yml
+
+- name: Wait for Pi after reboot
+  hosts: all
+  gather_facts: false
+  tasks:
+    - ansible.builtin.wait_for_connection:
+        timeout: 120
+
+- name: App deploy, systemd, Caddy, watchdog, button/AP, timezone
+  hosts: all
+  tasks:
+    - ansible.builtin.include_tasks: tasks/app_deploy.yml
+    - ansible.builtin.include_tasks: tasks/caddy.yml
+    - ansible.builtin.include_tasks: tasks/watchdog.yml
+    - ansible.builtin.include_tasks: tasks/button_ap.yml

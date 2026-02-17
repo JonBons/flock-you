@@ -2,7 +2,10 @@ from flask import Flask, render_template, request, jsonify, send_file
 import json
 import csv
 import os
+import signal
+import subprocess
 from datetime import datetime
+from pathlib import Path
 import time
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import threading
@@ -11,11 +14,34 @@ import serial.tools.list_ports
 import queue
 import uuid
 import pickle
-from pathlib import Path
+import re
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'flockyou_dev_key_2024')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
+
+# Config from config.yml (optional; deployed by Ansible)
+def load_app_config():
+    cfg = {}
+    for path in [Path('config.yml'), Path(__file__).parent / 'config.yml']:
+        if path.exists():
+            try:
+                import yaml
+                with open(path, 'r') as f:
+                    cfg = yaml.safe_load(f) or {}
+            except Exception as e:
+                print(f"Config load warning: {e}")
+            break
+    return cfg
+
+APP_CONFIG = load_app_config()
+DAILY_DETECTIONS_DIR = Path(APP_CONFIG.get('daily_detections_dir', 'data/detections'))
+STORAGE_QUOTA_DAYS = int(APP_CONFIG.get('storage_quota_days', 90))
+STORAGE_QUOTA_MB = int(APP_CONFIG.get('storage_quota_mb', 500))
+daily_append_lock = threading.Lock()
+shutdown_requested = False
+health_cache = {}
+health_cache_ttl = 2.0
 
 # Global variables
 detections = []
@@ -45,8 +71,9 @@ DATA_DIR = Path('data')
 CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
 SETTINGS_FILE = DATA_DIR / 'settings.json'
 
-# Ensure data directory exists
+# Ensure data directory and daily detections root exist
 DATA_DIR.mkdir(exist_ok=True)
+DAILY_DETECTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Persistent storage functions
 def load_cumulative_detections():
@@ -91,6 +118,91 @@ def save_settings():
         print(f"Saved settings: {settings}")
     except Exception as e:
         print(f"Error saving settings: {e}")
+
+# Daily detection storage (CSV append by date)
+CSV_DAILY_FIELDNAMES = [
+    'timestamp', 'detection_time', 'server_timestamp', 'protocol', 'detection_method',
+    'ssid', 'device_name', 'mac_address', 'manufacturer', 'alias', 'rssi', 'last_rssi',
+    'signal_strength', 'channel', 'last_channel', 'detection_count',
+    'latitude', 'longitude', 'altitude', 'gps_timestamp', 'satellites', 'fix_quality',
+    'gps_time_diff', 'gps_match_quality', 'timestamp_source'
+]
+
+def append_detection_to_daily(detection):
+    """Append one detection row to today's CSV (thread-safe)."""
+    if shutdown_requested:
+        return
+    try:
+        now = datetime.now()
+        day_dir = DAILY_DETECTIONS_DIR / str(now.year) / f"{now.month:02d}"
+        day_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = day_dir / f"{now.day:02d}.csv"
+        gps_data = detection.get('gps', {})
+        row = {
+            'timestamp': detection.get('timestamp'),
+            'detection_time': detection.get('detection_time'),
+            'server_timestamp': detection.get('server_timestamp'),
+            'protocol': detection.get('protocol'),
+            'detection_method': detection.get('detection_method'),
+            'ssid': detection.get('ssid', ''),
+            'device_name': detection.get('device_name', ''),
+            'mac_address': detection.get('mac_address'),
+            'manufacturer': detection.get('manufacturer', 'Unknown'),
+            'alias': detection.get('alias', ''),
+            'rssi': detection.get('rssi'),
+            'last_rssi': detection.get('last_rssi'),
+            'signal_strength': detection.get('signal_strength'),
+            'channel': detection.get('channel'),
+            'last_channel': detection.get('last_channel'),
+            'detection_count': detection.get('detection_count', 1),
+            'latitude': gps_data.get('latitude'),
+            'longitude': gps_data.get('longitude'),
+            'altitude': gps_data.get('altitude'),
+            'gps_timestamp': gps_data.get('timestamp'),
+            'satellites': gps_data.get('satellites'),
+            'fix_quality': gps_data.get('fix_quality'),
+            'gps_time_diff': gps_data.get('time_diff'),
+            'gps_match_quality': gps_data.get('match_quality'),
+            'timestamp_source': detection.get('timestamp_source', 'unknown')
+        }
+        with daily_append_lock:
+            file_existed = csv_path.exists()
+            with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_DAILY_FIELDNAMES)
+                if not file_existed:
+                    writer.writeheader()
+                writer.writerow(row)
+    except Exception as e:
+        print(f"Daily append error: {e}")
+
+def enforce_storage_quota():
+    """Remove oldest day files if over quota (age or size)."""
+    try:
+        days_to_remove = []
+        total_mb = 0
+        all_days = []
+        for year_dir in DAILY_DETECTIONS_DIR.iterdir():
+            if not year_dir.is_dir():
+                continue
+            for month_dir in year_dir.iterdir():
+                if not month_dir.is_dir():
+                    continue
+                for csv_path in month_dir.glob("*.csv"):
+                    stat = csv_path.stat()
+                    mtime = stat.st_mtime
+                    size_mb = stat.st_size / (1024 * 1024)
+                    all_days.append((mtime, size_mb, csv_path))
+        all_days.sort(key=lambda x: x[0])
+        cutoff_time = time.time() - (STORAGE_QUOTA_DAYS * 86400)
+        for mtime, size_mb, csv_path in all_days:
+            if mtime < cutoff_time:
+                csv_path.unlink(missing_ok=True)
+                continue
+            total_mb += size_mb
+            if total_mb > STORAGE_QUOTA_MB:
+                csv_path.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"Storage quota error: {e}")
 
 # Load OUI database
 def load_oui_database():
@@ -324,6 +436,28 @@ def find_best_gps_match(detection_timestamp):
         print(f"Error finding GPS match: {e}")
         return None
 
+def get_gps_port_candidate():
+    """Return the GPIO/serial0 port for GPS on Pi, or None."""
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        return None
+    for p in ports:
+        if p.device == '/dev/serial0':
+            return p.device
+    for p in ports:
+        d = (p.description or '') + (p.device or '')
+        if any(x in d for x in ('ttyAMA0', 'ttyS0', 'serial0', 'Primary', 'UART')):
+            return p.device
+    return None
+
+def get_jtag_port_candidate():
+    """Return first port with JTAG in description or device, or None."""
+    for p in serial.tools.list_ports.comports():
+        d = ((p.description or '') + (p.device or '')).upper()
+        if 'JTAG' in d:
+            return p.device
+    return None
+
 def validate_gps_data(gps_data):
     """Validate GPS data integrity"""
     if not gps_data:
@@ -483,6 +617,7 @@ def add_detection_from_serial(data):
         # Emit to connected clients
         safe_socket_emit('new_detection', data)
         print(f"New detection added: ID {data['id']}, Method: {data.get('detection_method')}, MAC: {mac_address}")
+    append_detection_to_daily(existing_detection if existing_detection else data)
 
 def connection_monitor():
     """Background thread for monitoring device connections"""
@@ -585,6 +720,43 @@ def attempt_reconnect_flock():
     
     thread = threading.Thread(target=reconnect_thread, daemon=True)
     thread.start()
+
+def try_auto_connect_serial():
+    """Try to connect GPS (serial0) and Flock (JTAG) if not already set in settings."""
+    global serial_connection, gps_enabled, flock_serial_connection, flock_device_connected, flock_device_port, settings
+    with app.app_context():
+        time.sleep(2.5)
+        if not settings.get('gps_port'):
+            port = get_gps_port_candidate()
+            if port:
+                try:
+                    if serial_connection:
+                        serial_connection.close()
+                    serial_connection = serial.Serial(port, GPS_BAUDRATE, timeout=GPS_TIMEOUT)
+                    with connection_lock:
+                        gps_enabled = True
+                    settings['gps_port'] = port
+                    save_settings()
+                    threading.Thread(target=gps_reader, daemon=True).start()
+                    print(f"Auto-connected GPS on {port}")
+                except Exception as e:
+                    print(f"Auto-connect GPS failed: {e}")
+        if not settings.get('flock_port'):
+            port = get_jtag_port_candidate()
+            if port:
+                try:
+                    if flock_serial_connection and flock_serial_connection.is_open:
+                        flock_serial_connection.close()
+                    flock_serial_connection = serial.Serial(port, 115200, timeout=1)
+                    with connection_lock:
+                        flock_device_connected = True
+                    flock_device_port = port
+                    settings['flock_port'] = port
+                    save_settings()
+                    threading.Thread(target=flock_reader, daemon=True).start()
+                    print(f"Auto-connected Flock (JTAG) on {port}")
+                except Exception as e:
+                    print(f"Auto-connect Flock failed: {e}")
 
 def attempt_reconnect_gps():
     """Attempt to reconnect to GPS device"""
@@ -765,6 +937,28 @@ def get_status():
         'flock_connected': flock_device_connected,
         'flock_port': flock_device_port
     })
+
+@app.route('/api/health', methods=['GET'])
+def get_health():
+    """Health check for watchdog; GPS and PPS lock status (cached)."""
+    global health_cache
+    now = time.time()
+    if health_cache and (now - health_cache.get('_ts', 0)) < health_cache_ttl:
+        out = dict(health_cache)
+        out.pop('_ts', None)
+        return jsonify(out)
+    out = {'gps': {'connected': gps_enabled, 'fix': False, 'satellites': 0}, 'pps': {'locked': False}}
+    if gps_enabled and gps_data and gps_data.get('fix_quality', 0) > 0:
+        out['gps']['fix'] = True
+        out['gps']['satellites'] = gps_data.get('satellites', 0)
+    try:
+        r = subprocess.run(['chronyc', 'sources', '-v'], capture_output=True, text=True, timeout=2)
+        if r.returncode == 0 and 'PPS' in (r.stdout or ''):
+            out['pps']['locked'] = True
+    except Exception:
+        pass
+    health_cache = {**out, '_ts': now}
+    return jsonify(out)
 
 @app.route('/api/gps/ports', methods=['GET'])
 def get_gps_ports():
@@ -964,13 +1158,94 @@ def export_kml():
     
     return send_file(filepath, as_attachment=True, download_name=filename)
 
+@app.route('/api/detections/files', methods=['GET'])
+def list_stored_detection_files():
+    """List stored daily detection files (by date)."""
+    files = []
+    try:
+        for year_dir in sorted(DAILY_DETECTIONS_DIR.iterdir(), reverse=True):
+            if not year_dir.is_dir() or not year_dir.name.isdigit():
+                continue
+            for month_dir in sorted(year_dir.iterdir(), reverse=True):
+                if not month_dir.is_dir() or not month_dir.name.isdigit():
+                    continue
+                for csv_path in sorted(month_dir.glob("*.csv"), reverse=True):
+                    if not csv_path.name.isdigit() or len(csv_path.name) != 2:
+                        continue
+                    day = csv_path.stem
+                    date_str = f"{year_dir.name}-{month_dir.name}-{day}"
+                    files.append({
+                        'date': date_str,
+                        'path': f"{year_dir.name}/{month_dir.name}/{day}",
+                        'csv': f"{year_dir.name}/{month_dir.name}/{day}.csv",
+                    })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'files': files})
+
+@app.route('/api/detections/files/<year>/<month>/<day>', methods=['GET'])
+def download_stored_detection_file(year, month, day):
+    """Download stored daily file as CSV or KML."""
+    if not year.isdigit() or not month.isdigit() or not day.isdigit():
+        return jsonify({'status': 'error', 'message': 'Invalid date'}), 400
+    fmt = request.args.get('format', 'csv')
+    base = DAILY_DETECTIONS_DIR / year / month
+    csv_path = base / f"{day}.csv"
+    if not csv_path.exists():
+        return jsonify({'status': 'error', 'message': 'Not found'}), 404
+    if fmt == 'csv':
+        return send_file(csv_path, as_attachment=True, download_name=f"detections_{year}-{month}-{day}.csv")
+    if fmt == 'kml':
+        rows = []
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+        kml_path = base / f"{day}.kml"
+        document_name = f"Flock You detections {year}-{month}-{day}"
+        kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document><name>{document_name}</name><description>{len(rows)} detections</description>
+"""
+        for i, row in enumerate(rows):
+            lat, lon = row.get('latitude'), row.get('longitude')
+            if lat and lon:
+                try:
+                    lat, lon = float(lat), float(lon)
+                    name = row.get('alias') or row.get('mac_address') or f"Detection {i+1}"
+                    kml_content += f"<Placemark><name>{name}</name><Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>\n"
+                except (TypeError, ValueError):
+                    pass
+        kml_content += "</Document></kml>"
+        from io import BytesIO
+        return send_file(BytesIO(kml_content.encode('utf-8')), mimetype='application/vnd.google-earth.kml+xml',
+                        as_attachment=True, download_name=f"detections_{year}-{month}-{day}.kml")
+    return jsonify({'status': 'error', 'message': 'format must be csv or kml'}), 400
+
+@app.route('/api/detections/files/<year>/<month>/<day>', methods=['DELETE'])
+def delete_stored_detection_file(year, month, day):
+    """Delete stored daily CSV (and KML if present)."""
+    if not year.isdigit() or not month.isdigit() or not day.isdigit():
+        return jsonify({'status': 'error', 'message': 'Invalid date'}), 400
+    base = DAILY_DETECTIONS_DIR / year / month
+    csv_path = base / f"{day}.csv"
+    kml_path = base / f"{day}.kml"
+    try:
+        if csv_path.exists():
+            csv_path.unlink()
+        if kml_path.exists():
+            kml_path.unlink()
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'status': 'success'}), 200
+
 @app.route('/api/clear', methods=['POST'])
 def clear_detections():
     """Clear session detections"""
     global detections, next_detection_id, session_start_time
     detections.clear()
     next_detection_id = 1  # Reset ID counter
-    session_start_time = datetime.now()  # Reset session start time
+    session_start_time = datetime.now()
     safe_socket_emit('detections_cleared', {})
     return jsonify({'status': 'success', 'message': 'Session detections cleared'})
 
@@ -1280,11 +1555,35 @@ def handle_serial_terminal_request(data):
         print(f"Serial terminal connection error: {e}")
         emit('serial_error', {'message': f'Failed to start terminal: {str(e)}'})
 
+def _graceful_shutdown(signum=None, frame=None):
+    """On SIGTERM: close serial, flush daily writes, exit."""
+    global shutdown_requested
+    shutdown_requested = True
+    print("Shutdown requested, closing serial and exiting...")
+    with daily_append_lock:
+        pass  # Wait for any in-flight daily append to finish
+    if flock_serial_connection and flock_serial_connection.is_open:
+        try:
+            flock_serial_connection.close()
+        except Exception:
+            pass
+    if serial_connection and serial_connection.is_open:
+        try:
+            serial_connection.close()
+        except Exception:
+            pass
+    os._exit(0)
+
+
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
     # Load data on startup
     load_oui_database()
     load_cumulative_detections()
     load_settings()
+    enforce_storage_quota()
+    
+    threading.Thread(target=try_auto_connect_serial, daemon=True).start()
     
     # Start connection monitor thread
     monitor_thread = threading.Thread(target=connection_monitor, daemon=True)
@@ -1294,18 +1593,14 @@ if __name__ == '__main__':
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
     
+    port = int(APP_CONFIG.get('flask_port', os.environ.get('FLASK_PORT', 5000)))
     print("Starting Flock You API server...")
-    print("Server will be available at: http://localhost:5000")
+    print(f"Server will be available at: http://localhost:{port}")
     print("Press Ctrl+C to stop the server")
     
     try:
-        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=False, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         print("\nShutting down server...")
-        # Clean up connections
-        if flock_serial_connection and flock_serial_connection.is_open:
-            flock_serial_connection.close()
-        if serial_connection and serial_connection.is_open:
-            serial_connection.close()
-        print("Server stopped.")
+        _graceful_shutdown()
         
