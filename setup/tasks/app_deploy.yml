@@ -28,6 +28,15 @@
     group: "{{ ansible_user }}"
     recurse: true
 
+- name: Ensure Python pip, venv, and packaging are installed (required by Ansible pip module)
+  ansible.builtin.apt:
+    name:
+      - python3-pip
+      - python3-venv
+      - python3-packaging
+    state: present
+    update_cache: true
+
 - name: Create Python venv
   ansible.builtin.pip:
     name: -r "{{ app_root }}/api/requirements.txt"
