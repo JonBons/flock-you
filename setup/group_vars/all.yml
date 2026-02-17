@@ -2,7 +2,7 @@
 # Override in group_vars/flock_pi.yml or via -e for secrets.
 
 # Repo and app path
-repo_url: "https://github.com/your-username/flock-you.git"  # or SSH URL
+repo_url: "https://github.com/jonbons/flock-you.git"  # or SSH URL
 repo_version: main
 app_root: "/home/{{ ansible_user }}/flock-you"
 

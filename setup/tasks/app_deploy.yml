@@ -1,4 +1,10 @@
 # Clone repo, venv, daily storage dir, systemd unit for Flask API
+- name: Ensure git is installed
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+
 - name: Ensure app root parent exists
   ansible.builtin.file:
     path: "{{ app_root | dirname }}"

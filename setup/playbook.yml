@@ -4,6 +4,7 @@
 #   cd setup && ansible-playbook -i inventory.yml playbook.yml
 - name: Serial, PPS, gpsd, chrony
   hosts: all
+  become: true
   handlers:
     - name: restart gpsd
       ansible.builtin.systemd:
@@ -13,6 +14,7 @@
       ansible.builtin.systemd:
         name: chrony
         state: restarted
+      when: not serial_pps_rebooting | default(false)
   tasks:
     - ansible.builtin.include_tasks: tasks/serial_pps.yml
 
@@ -25,8 +27,17 @@
 
 - name: App deploy, systemd, Caddy, watchdog, button/AP, timezone
   hosts: all
+  become: true
+  vars:
+    reboot_after_setup: true   # set -e reboot_after_setup=false to skip final reboot
   tasks:
     - ansible.builtin.include_tasks: tasks/app_deploy.yml
     - ansible.builtin.include_tasks: tasks/caddy.yml
     - ansible.builtin.include_tasks: tasks/watchdog.yml
     - ansible.builtin.include_tasks: tasks/button_ap.yml
+    - name: Reboot to apply all services
+      ansible.builtin.reboot:
+        msg: "Flock You setup complete"
+        connect_timeout: 5
+        reboot_timeout: 120
+      when: reboot_after_setup | default(true) | bool

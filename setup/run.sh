@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Run the Flock You Ansible playbook against the Pi.
 # Usage: ./run.sh [optional limit host]  e.g. ./run.sh flock_pi
 set -e

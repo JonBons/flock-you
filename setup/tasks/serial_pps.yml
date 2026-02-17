@@ -62,9 +62,15 @@
   ansible.builtin.template:
     src: chrony.conf.j2
     dest: /etc/chrony/chrony.conf
+  register: chrony_config
   notify: restart chrony
 
-- name: Flush handlers so gpsd/chrony restart before reboot
+- name: Set fact when we are about to reboot (PPS /dev/pps0 not available until after reboot)
+  ansible.builtin.set_fact:
+    serial_pps_rebooting: true
+  when: uart_line.changed or pps_line.changed
+
+- name: Flush handlers so gpsd restarts (chrony skipped when rebooting; /dev/pps0 appears after reboot)
   ansible.builtin.meta: flush_handlers
   when: uart_line.changed or pps_line.changed
 
