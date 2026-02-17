@@ -256,6 +256,27 @@
             box-shadow: 0 4px 12px rgba(8, 145, 178, 0.4);
         }
 
+        .shared-scan-btn {
+            background: linear-gradient(135deg, #4b5563 0%, #6b7280 100%);
+            color: #e0e0e0;
+            font-weight: 600;
+            border: 1px solid #6b7280;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.75rem;
+        }
+        .shared-scan-btn:hover {
+            background: linear-gradient(135deg, #6b7280 0%, #9ca3af 100%);
+            transform: translateY(-2px);
+        }
+        .shared-scan-btn.on {
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+            border-color: #047857;
+            color: white;
+        }
+        .shared-scan-btn.on:hover {
+            background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+        }
+
         .serial-terminal-container {
             background: rgba(45, 27, 105, 0.8);
             border: 1px solid #8b5cf6;
@@ -1408,6 +1429,7 @@
             
             <div class="header-buttons">
                 <div class="action-buttons">
+                    <button id="shared-scan-btn" class="shared-scan-btn" onclick="toggleSharedScan()" title="Coordinate Pi + ESP32: Pi BLE scan, ESP32 odd WiFi channels">Shared scan: OFF</button>
                     <button id="serial-terminal-btn" class="serial-terminal-btn" onclick="toggleSerialTerminal()">Terminal</button>
                     <button id="oui-search-btn" class="oui-search-btn" onclick="toggleOuiSearch()">OUI</button>
                     <button id="map-btn" class="map-btn" onclick="toggleMap()">Map</button>
@@ -1608,6 +1630,7 @@
             loadSettings();
             loadStoredFiles();
             loadHealth();
+            loadSharedScanState();
             
             // Periodic status refresh every 5 seconds
             setInterval(loadStatus, 5000);
@@ -1967,6 +1990,41 @@
                 })
                 .catch(error => {
                     console.error('Error loading status:', error);
+                });
+        }
+
+        function loadSharedScanState() {
+            fetch('/api/shared_scan')
+                .then(response => response.json())
+                .then(data => {
+                    const btn = document.getElementById('shared-scan-btn');
+                    if (!btn) return;
+                    const on = !!data.enabled;
+                    btn.textContent = 'Shared scan: ' + (on ? 'ON' : 'OFF');
+                    btn.classList.toggle('on', on);
+                })
+                .catch(() => {});
+        }
+
+        function toggleSharedScan() {
+            const btn = document.getElementById('shared-scan-btn');
+            const currentlyOn = btn && btn.classList.contains('on');
+            const newState = !currentlyOn;
+            fetch('/api/shared_scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: newState })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success' || data.enabled !== undefined) {
+                        const on = !!data.enabled;
+                        btn.textContent = 'Shared scan: ' + (on ? 'ON' : 'OFF');
+                        btn.classList.toggle('on', on);
+                    }
+                })
+                .catch(err => {
+                    console.error('Shared scan toggle failed:', err);
                 });
         }
 

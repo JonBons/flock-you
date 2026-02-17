@@ -134,6 +134,12 @@ static bool device_in_range = false;
 static unsigned long last_detection_time = 0;
 static unsigned long last_heartbeat = 0;
 static NimBLEScan* pBLEScan;
+// Shared scan mode: when true, use slot-based channel split and BLE stagger with Pi
+static bool shared_scan_mode = false;
+// Time sync from Pi (GPS/PPS): unix time at sync moment, and ESP32 millis() at that moment
+static bool time_sync_received = false;
+static double unix_ts_at_sync = 0.0;
+static unsigned long millis_at_sync = 0;
 
 
 
@@ -655,13 +661,76 @@ void hop_channel()
 {
     unsigned long now = millis();
     if (now - last_channel_hop > CHANNEL_HOP_INTERVAL) {
-        current_channel++;
-        if (current_channel > MAX_CHANNEL) {
-            current_channel = 1;
+        if (shared_scan_mode) {
+            int slot = get_slot();
+            if (slot == 0) {
+                // Slot 0: ESP32 odd channels 1,3,5,7,9,11,13
+                if ((current_channel & 1) == 0) current_channel = 1;
+                current_channel += 2;
+                if (current_channel > MAX_CHANNEL) current_channel = 1;
+            } else if (slot == 1) {
+                // Slot 1: ESP32 even channels 2,4,6,8,10,12
+                if ((current_channel & 1) == 1) current_channel = 2;
+                current_channel += 2;
+                if (current_channel > 12) current_channel = 2;
+            } else {
+                // Not synced yet: fallback to odd only
+                current_channel += 2;
+                if (current_channel > MAX_CHANNEL) current_channel = 1;
+            }
+        } else {
+            current_channel++;
+            if (current_channel > MAX_CHANNEL) {
+                current_channel = 1;
+            }
         }
         esp_wifi_set_channel(current_channel, WIFI_SECOND_CHAN_NONE);
         last_channel_hop = now;
-         printf("[WiFi] Hopped to channel %d\n", current_channel);
+        printf("[WiFi] Hopped to channel %d%s\n", current_channel, shared_scan_mode ? " (shared)" : "");
+    }
+}
+
+// Current Unix time from Pi sync (GPS/PPS). Returns 0 if never synced.
+double get_synced_unix_time()
+{
+    if (!time_sync_received) return 0.0;
+    return unix_ts_at_sync + (double)(millis() - millis_at_sync) / 1000.0;
+}
+
+// Slot 0 or 1 (1-second slots) for channel/BLE alternation with Pi. -1 if not synced.
+int get_slot()
+{
+    double t = get_synced_unix_time();
+    if (t <= 0.0) return -1;
+    return ((int)t) % 2;
+}
+
+// Parse serial commands from Pi: shared_scan, time_sync
+void process_serial_command()
+{
+    if (!Serial.available()) return;
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) return;
+    DynamicJsonDocument doc(384);
+    DeserializationError err = deserializeJson(doc, line);
+    if (err) return;
+    const char* cmd = doc["cmd"];
+    if (!cmd) return;
+    if (strcmp(cmd, "shared_scan") == 0) {
+        if (doc.containsKey("on")) {
+            shared_scan_mode = doc["on"].as<bool>();
+            if (shared_scan_mode && (current_channel & 1) == 0) {
+                current_channel = 1;
+                esp_wifi_set_channel(current_channel, WIFI_SECOND_CHAN_NONE);
+            }
+            printf("[CMD] shared_scan %s\n", shared_scan_mode ? "ON" : "OFF");
+        }
+    } else if (strcmp(cmd, "time_sync") == 0 && doc.containsKey("unix_ts")) {
+        unix_ts_at_sync = doc["unix_ts"].as<double>();
+        millis_at_sync = millis();
+        time_sync_received = true;
+        printf("[CMD] time_sync %.3f\n", unix_ts_at_sync);
     }
 }
 
@@ -710,6 +779,9 @@ void setup()
 
 void loop()
 {
+    // Process commands from Pi (shared scan toggle, etc.)
+    process_serial_command();
+
     // Handle channel hopping for WiFi promiscuous mode
     hop_channel();
     
@@ -731,8 +803,11 @@ void loop()
         }
     }
     
-    if (millis() - last_ble_scan >= BLE_SCAN_INTERVAL && !pBLEScan->isScanning()) {
-        printf("[BLE] scan...\n");
+    // BLE: in shared scan mode with time sync, only scan in slot 1 (odd seconds); Pi uses slot 0 (even seconds)
+    unsigned long ble_interval_ms = (shared_scan_mode && time_sync_received) ? 2000 : BLE_SCAN_INTERVAL;
+    bool in_ble_slot = !shared_scan_mode || !time_sync_received || (get_slot() == 1);
+    if (in_ble_slot && (millis() - last_ble_scan >= ble_interval_ms) && !pBLEScan->isScanning()) {
+        printf("[BLE] scan...%s\n", (shared_scan_mode && time_sync_received) ? " (slot 1)" : "");
         pBLEScan->start(BLE_SCAN_DURATION, false);
         last_ble_scan = millis();
     }

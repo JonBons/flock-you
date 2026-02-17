@@ -6,3 +6,4 @@ pyserial==3.5
 Werkzeug>=3.0.0
 requests==2.31.0
 PyYAML>=6.0
+bleak>=0.21.0

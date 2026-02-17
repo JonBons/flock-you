@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Flock You enclosure button daemon.
-- Short press: toggle WiFi AP (hostapd + dnsmasq).
+- Short press: toggle WiFi AP ↔ Shared scan mode.
+  - AP on  → stop AP, enable shared scan (Pi WiFi freed for scanning, ESP32 odd channels).
+  - AP off → disable shared scan, start AP (Pi broadcasts config network again).
 - Long press ({{ long_press_seconds }}s): clean shutdown (stop services, then halt).
 Runs as root so it can start/stop hostapd and shutdown.
 """
@@ -10,12 +12,16 @@ import subprocess
 import time
 import signal
 import sys
+import json
+import urllib.request
+import urllib.error
 
 GPIO_PIN = {{ button_gpio }}
 LONG_PRESS_SEC = {{ long_press_seconds }}
 HOSTAPD_CONF = "/etc/hostapd/hostapd.conf"
 DNSMASQ_AP_CONF = "/etc/dnsmasq.d/flockyou-ap.conf"
 AP_INTERFACE = "{{ ap_interface }}"
+API_BASE = "http://127.0.0.1:{{ flask_port }}"
 
 try:
     from gpiozero import Button
@@ -34,6 +40,20 @@ def ap_running():
         return True
     except Exception:
         return False
+
+
+def set_shared_scan(enabled):
+    """Tell the API to enable or disable shared scan mode."""
+    try:
+        req = urllib.request.Request(
+            f"{API_BASE}/api/shared_scan",
+            data=json.dumps({"enabled": enabled}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"API shared_scan call failed: {e}", file=sys.stderr)
 
 
 def ap_start():
@@ -80,8 +100,12 @@ def on_released():
         return
     time.sleep(0.05)
     if ap_running():
+        # AP is on → turn off AP and enable shared scan (Pi WiFi freed for scanning)
         ap_stop()
+        set_shared_scan(True)
     else:
+        # AP is off (we're in shared scan) → disable shared scan, then start AP again
+        set_shared_scan(False)
         ap_start()
 
 

@@ -65,6 +65,18 @@ connection_lock = threading.Lock()
 serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
+# Shared scan mode: Pi + ESP32 coordinate (ESP32 odd channels, Pi BLE scanner)
+shared_scan_enabled = False
+shared_scan_lock = threading.Lock()
+
+# Detection patterns for Pi BLE scanner (mirror ESP32)
+PI_BLE_MAC_PREFIXES = (
+    '58:8e:81', 'cc:cc:cc', 'ec:1b:bd', '90:35:ea', '04:0d:84',
+    'f0:82:c0', '1c:34:f1', '38:5b:44', '94:34:69', 'b4:e3:f9',
+    '70:c9:4e', '3c:91:80', 'd8:f3:bc', '80:30:49', '14:5a:fc',
+    '74:4c:a1', '08:3a:88', '9c:2f:9d', '94:08:53', 'e4:aa:ea',
+)
+PI_BLE_DEVICE_NAME_PATTERNS = ('FS Ext Battery', 'Penguin', 'Flock', 'Pigvision')
 
 # Data storage paths
 DATA_DIR = Path('data')
@@ -400,6 +412,106 @@ def flock_reader():
                     break
             time.sleep(0.1)
 
+def send_flock_command(cmd_dict):
+    """Send a JSON command line to the Flock device (e.g. shared_scan toggle, time_sync)."""
+    global flock_serial_connection
+    if not flock_serial_connection or not flock_serial_connection.is_open:
+        return False
+    try:
+        line = json.dumps(cmd_dict) + '\n'
+        flock_serial_connection.write(line.encode('utf-8'))
+        flock_serial_connection.flush()
+        return True
+    except Exception as e:
+        print(f"Send flock command error: {e}")
+        return False
+
+def time_sync_loop():
+    """Periodically send Pi system time to ESP32 so it can align slots (works with or without GPS)."""
+    global shared_scan_enabled
+    while True:
+        time.sleep(15)
+        with shared_scan_lock:
+            if not shared_scan_enabled:
+                break
+        send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
+
+def _pi_ble_check_mac(mac_str):
+    if not mac_str or len(mac_str) < 8:
+        return False
+    prefix = (mac_str.replace('-', ':') + ':')[:8]
+    return any(prefix.lower().startswith(p.lower()) for p in PI_BLE_MAC_PREFIXES)
+
+def _pi_ble_check_name(name):
+    if not name:
+        return False
+    return any(p.lower() in name.lower() for p in PI_BLE_DEVICE_NAME_PATTERNS)
+
+def _pi_ble_slot0():
+    """True if we're in slot 0 (even second) for BLE stagger with ESP32 (slot 1 = odd second)."""
+    return int(time.time()) % 2 == 0
+
+def pi_ble_scan_loop():
+    """Run BLE scans on the Pi while shared_scan_enabled; slot 0 (even seconds) only to stagger with ESP32."""
+    global shared_scan_enabled
+    try:
+        import asyncio
+        from bleak import BleakScanner
+    except ImportError:
+        print("Pi BLE scanner: bleak not installed. pip install bleak")
+        return
+    with app.app_context():
+        while True:
+            with shared_scan_lock:
+                if not shared_scan_enabled:
+                    break
+            # Only scan in even seconds (slot 0); ESP32 scans in odd seconds (slot 1)
+            if not _pi_ble_slot0():
+                time.sleep(0.25)
+                continue
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                devices = loop.run_until_complete(BleakScanner.discover(timeout=1.0))
+                loop.close()
+            except Exception as e:
+                print(f"Pi BLE scan error: {e}")
+                time.sleep(0.5)
+                continue
+            for d in devices:
+                with shared_scan_lock:
+                    if not shared_scan_enabled:
+                        break
+                mac = getattr(d, 'address', None) or ''
+                if ':' not in mac and len(mac) == 17:
+                    mac = ':'.join(mac[i:i+2] for i in range(0, 17, 2))
+                name = getattr(d, 'name', None) or ''
+                rssi = getattr(d, 'rssi', None)
+                if rssi is None and hasattr(d, 'metadata') and isinstance(d.metadata, dict):
+                    rssi = d.metadata.get('rssi')
+                if rssi is None:
+                    rssi = -100
+                detection_method = None
+                if _pi_ble_check_mac(mac):
+                    detection_method = 'mac_prefix'
+                elif _pi_ble_check_name(name):
+                    detection_method = 'device_name'
+                if not detection_method:
+                    continue
+                doc = {
+                    'timestamp': int(time.time() * 1000),
+                    'detection_time': f'{time.time():.3f}s',
+                    'protocol': 'bluetooth_le',
+                    'detection_method': detection_method,
+                    'mac_address': mac,
+                    'device_name': name or '',
+                    'rssi': rssi,
+                    'signal_strength': 'STRONG' if rssi > -50 else ('MEDIUM' if rssi > -70 else 'WEAK'),
+                    'source': 'pi_ble',
+                }
+                add_detection_from_serial(doc)
+            time.sleep(0.2)
+
 def find_best_gps_match(detection_timestamp):
     """Find the GPS reading closest in time to the detection timestamp"""
     global gps_history
@@ -706,6 +818,10 @@ def attempt_reconnect_flock():
                     # Restart the reading thread
                     flock_thread = threading.Thread(target=flock_reader, daemon=True)
                     flock_thread.start()
+                    with shared_scan_lock:
+                        send_flock_command({'cmd': 'shared_scan', 'on': shared_scan_enabled})
+                        if shared_scan_enabled:
+                            send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
                     return
                     
                 except Exception as e:
@@ -908,7 +1024,11 @@ def connect_flock():
         # Start reading thread
         flock_thread = threading.Thread(target=flock_reader, daemon=True)
         flock_thread.start()
-        
+        # Sync shared scan mode and time (for slot coordination) to ESP32
+        with shared_scan_lock:
+            send_flock_command({'cmd': 'shared_scan', 'on': shared_scan_enabled})
+            if shared_scan_enabled:
+                send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
         return jsonify({'status': 'success', 'message': f'Connected to Flock You device on {port}'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
@@ -937,6 +1057,35 @@ def get_status():
         'flock_connected': flock_device_connected,
         'flock_port': flock_device_port
     })
+
+# Pi BLE scanner and time-sync threads (started when shared scan is enabled)
+_pi_ble_thread = None
+_time_sync_thread = None
+
+@app.route('/api/shared_scan', methods=['GET'])
+def get_shared_scan():
+    """Get shared scan mode state."""
+    with shared_scan_lock:
+        return jsonify({'enabled': shared_scan_enabled})
+
+@app.route('/api/shared_scan', methods=['POST'])
+def set_shared_scan():
+    """Enable or disable shared scan (Pi BLE + ESP32 slot-based coordination)."""
+    global shared_scan_enabled, _pi_ble_thread, _time_sync_thread
+    data = request.get_json() or {}
+    enabled = bool(data.get('enabled', False))
+    with shared_scan_lock:
+        shared_scan_enabled = enabled
+    send_flock_command({'cmd': 'shared_scan', 'on': enabled})
+    if enabled:
+        send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
+        if _time_sync_thread is None or not _time_sync_thread.is_alive():
+            _time_sync_thread = threading.Thread(target=time_sync_loop, daemon=True)
+            _time_sync_thread.start()
+        if _pi_ble_thread is None or not _pi_ble_thread.is_alive():
+            _pi_ble_thread = threading.Thread(target=pi_ble_scan_loop, daemon=True)
+            _pi_ble_thread.start()
+    return jsonify({'status': 'success', 'enabled': enabled})
 
 @app.route('/api/health', methods=['GET'])
 def get_health():
