@@ -579,6 +579,25 @@ def get_jtag_port_candidate():
             return p.device
     return None
 
+def get_sniffer_port_candidate():
+    """Return best sniffer port: JTAG first, then first ttyACM/ttyUSB (e.g. ESP32 USB serial).
+    Skips the GPS port (ttyS0/serial0) so we don't use the same device for both."""
+    port = get_jtag_port_candidate()
+    if port:
+        return port
+    gps_port = (APP_CONFIG.get('gps_serial_port') or '').strip() or settings.get('gps_port')
+    for p in serial.tools.list_ports.comports():
+        dev = (p.device or '')
+        if not dev:
+            continue
+        if gps_port and dev == gps_port:
+            continue
+        if '/dev/ttyS0' in dev or 'ttyAMA0' in dev or 'serial0' in dev:
+            continue
+        if 'ttyACM' in dev or 'ttyUSB' in dev:
+            return dev
+    return None
+
 def validate_gps_data(gps_data):
     """Validate GPS data integrity"""
     if not gps_data:
@@ -873,10 +892,10 @@ def try_auto_connect_serial():
             except Exception as e:
                 print(f"Auto-connect GPS failed ({gps_port}): {e}")
 
-        # Sniffer (Flock): config-defined port, then saved setting, then auto-detect JTAG
+        # Sniffer (Flock): config-defined port, then saved setting, then auto-detect (JTAG or ttyACM/ttyUSB)
         sniffer_port = (APP_CONFIG.get('sniffer_serial_port') or '').strip() or settings.get('flock_port') or None
         if not sniffer_port:
-            sniffer_port = get_jtag_port_candidate()
+            sniffer_port = get_sniffer_port_candidate()
         if sniffer_port:
             try:
                 if flock_serial_connection and flock_serial_connection.is_open:

@@ -1614,6 +1614,7 @@
         let userInteractingWithPorts = false; // Flag to prevent auto-refresh interference
         let terminalFilter = 'all';
         let allTerminalData = [];
+        let serialConnectionTimeoutId = null;
         let map = null;
         let mapMarkers = [];
         let mapLayers = {};
@@ -2473,11 +2474,17 @@
             // Add connection message
             addSerialLine(`Connecting to ${port} at 115200 baud...`, 'info');
             
+            // Cancel any existing connection timeout
+            if (serialConnectionTimeoutId) {
+                clearTimeout(serialConnectionTimeoutId);
+                serialConnectionTimeoutId = null;
+            }
             // Request serial terminal connection
             socket.emit('request_serial_terminal', {port: port});
             
-            // Set a timeout for connection
-            setTimeout(() => {
+            // Set a timeout for connection (cleared when serial_connected or serial_error is received)
+            serialConnectionTimeoutId = setTimeout(() => {
+                serialConnectionTimeoutId = null;
                 if (statusElement.textContent === 'Connecting...') {
                     statusElement.textContent = 'Connection Timeout';
                     statusElement.style.color = '#f87171';
@@ -2575,6 +2582,10 @@
 
         socket.on('serial_connected', function() {
             console.log('Serial terminal connected');
+            if (serialConnectionTimeoutId) {
+                clearTimeout(serialConnectionTimeoutId);
+                serialConnectionTimeoutId = null;
+            }
             const statusElement = document.getElementById('serialConnectionStatus');
             if (statusElement) {
                 statusElement.textContent = 'Connected';
@@ -2595,6 +2606,15 @@
 
         socket.on('serial_error', function(data) {
             console.log('Serial error:', data);
+            if (serialConnectionTimeoutId) {
+                clearTimeout(serialConnectionTimeoutId);
+                serialConnectionTimeoutId = null;
+            }
+            const statusElement = document.getElementById('serialConnectionStatus');
+            if (statusElement) {
+                statusElement.textContent = 'Disconnected';
+                statusElement.style.color = '#f87171';
+            }
             if (data && data.message) {
                 addSerialLine(`Error: ${data.message}`, 'error');
             } else {
