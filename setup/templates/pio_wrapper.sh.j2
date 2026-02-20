@@ -1,0 +1,8 @@
+#!/bin/sh
+# Wrapper so pio/build subprocesses see PlatformIO toolchain on PATH
+for _d in "$HOME/.platformio/packages"/toolchain-*/bin; do
+  [ -d "$_d" ] && PATH="$_d:$PATH"
+done
+unset _d
+export PATH
+exec "{{ esp32_pio_venv }}/bin/{{ pio_cmd }}" "$@"

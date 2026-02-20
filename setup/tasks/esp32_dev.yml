@@ -45,11 +45,15 @@
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
 
-- name: Symlink pio and platformio into ~/.local/bin
-  ansible.builtin.file:
-    src: "{{ esp32_pio_venv }}/bin/{{ item }}"
-    path: "/home/{{ ansible_user }}/.local/bin/{{ item }}"
-    state: link
+- name: Install pio wrapper (sets toolchain PATH so build finds xtensa-esp32s3-elf-g++)
+  ansible.builtin.template:
+    src: templates/pio_wrapper.sh.j2
+    dest: "/home/{{ ansible_user }}/.local/bin/{{ item }}"
+    mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  vars:
+    pio_cmd: "{{ item }}"
   loop: [pio, platformio]
   become_user: "{{ ansible_user }}"
   become: true
@@ -96,6 +100,6 @@
     msg:
       - "ESP32 dev environment ready. Ensure ~/.local/bin is in your PATH (e.g. export PATH=\"$HOME/.local/bin:$PATH\")."
       - "Log out and back in (or run newgrp dialout) so dialout group takes effect."
-      - "Start a new login shell (or source ~/.bashrc) so toolchain PATH is set, then: pio run -e xiao_esp32s3"
+      - "Build: pio run -e xiao_esp32s3   (wrapper sets toolchain PATH automatically)"
       - "Upload: pio run -e xiao_esp32s3 -t upload"
       - "First run will download the ESP32 toolchain and libraries."
