@@ -15,13 +15,6 @@
     boot_config_dir: "/boot"
   when: not boot_firmware.stat.exists
 
-- name: Enable UART in config.txt
-  ansible.builtin.lineinfile:
-    path: "{{ boot_config_dir }}/config.txt"
-    line: "enable_uart=1"
-    create: false
-  register: uart_line
-
 - name: Add PPS GPIO18 overlay
   ansible.builtin.lineinfile:
     path: "{{ boot_config_dir }}/config.txt"
@@ -29,19 +22,19 @@
     create: false
   register: pps_line
 
-- name: Remove serial console from cmdline
+- name: Remove serial console from cmdline (replace with space to avoid joining parameters)
   ansible.builtin.replace:
     path: "{{ boot_config_dir }}/cmdline.txt"
-    regexp: 'console=(serial0|ttyAMA0|ttyS0)[^ ]*'
-    replace: ''
-  when: boot_config_dir == "/boot/firmware"
+    regexp: 'console=(serial0|ttyAMA0|ttyS0)[^ ]* ?'
+    replace: ' '
+  register: cmdline_edit
 
-- name: Remove serial console from cmdline (legacy path)
+- name: Normalize multiple spaces in cmdline.txt (single line, kernel expects one space between params)
   ansible.builtin.replace:
     path: "{{ boot_config_dir }}/cmdline.txt"
-    regexp: 'console=(serial0|ttyAMA0|ttyS0)[^ ]*'
-    replace: ''
-  when: boot_config_dir == "/boot"
+    regexp: ' +'
+    replace: ' '
+  when: cmdline_edit.changed
 
 - name: Install pps-tools chrony gpsd
   ansible.builtin.apt:
@@ -68,15 +61,15 @@
 - name: Set fact when we are about to reboot (PPS /dev/pps0 not available until after reboot)
   ansible.builtin.set_fact:
     serial_pps_rebooting: true
-  when: uart_line.changed or pps_line.changed
+  when: pps_line.changed or cmdline_edit.changed
 
 - name: Flush handlers so gpsd restarts (chrony skipped when rebooting; /dev/pps0 appears after reboot)
   ansible.builtin.meta: flush_handlers
-  when: uart_line.changed or pps_line.changed
+  when: pps_line.changed or cmdline_edit.changed
 
 - name: Reboot to apply serial and PPS
   ansible.builtin.reboot:
     msg: "Serial and PPS config applied"
     connect_timeout: 5
     reboot_timeout: 120
-  when: uart_line.changed or pps_line.changed
+  when: pps_line.changed or cmdline_edit.changed

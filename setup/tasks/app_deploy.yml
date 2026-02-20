@@ -39,7 +39,7 @@
 
 - name: Create Python venv
   ansible.builtin.pip:
-    name: -r "{{ app_root }}/api/requirements.txt"
+    requirements: "{{ app_root }}/api/requirements.txt"
     virtualenv: "{{ app_root }}/api/venv"
     virtualenv_command: "python3 -m venv"
     state: present
