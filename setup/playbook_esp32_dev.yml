@@ -1,0 +1,15 @@
+---
+# ESP32 development environment – compile and upload (PlatformIO)
+# Run against a Debian/Ubuntu/Raspbian host (your dev machine or a build server).
+# Example: add a host to inventory and run:
+#   ansible-playbook -i inventory.yml playbook_esp32_dev.yml
+# For localhost (WSL or Linux):
+#   ansible-playbook -i inventory_esp32_dev.yml playbook_esp32_dev.yml
+
+- name: Install ESP32 build and upload environment (PlatformIO, udev, deps)
+  hosts: esp32_dev
+  become: true
+  vars:
+    esp32_pio_venv: "/home/{{ ansible_user }}/.platformio-venv"
+  tasks:
+    - ansible.builtin.include_tasks: tasks/esp32_dev.yml

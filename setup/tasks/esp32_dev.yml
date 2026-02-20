@@ -1,0 +1,101 @@
+# Install everything needed to compile and upload ESP32 code (PlatformIO)
+# Targets Debian/Ubuntu/Raspbian. Run playbook against your dev machine or localhost.
+
+- name: Install system packages for ESP32 / PlatformIO
+  ansible.builtin.apt:
+    name:
+      - git
+      - python3
+      - python3-pip
+      - python3-venv
+      - unzip
+      - curl
+      - libffi-dev
+      - libssl-dev
+    state: present
+    update_cache: true
+
+- name: Add {{ ansible_user }} to dialout for serial access
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: dialout
+    append: true
+
+- name: Create PlatformIO virtual environment
+  ansible.builtin.command:
+    cmd: python3 -m venv "{{ esp32_pio_venv }}"
+    creates: "{{ esp32_pio_venv }}/bin/python"
+  become_user: "{{ ansible_user }}"
+  become: true
+
+- name: Install PlatformIO Core into venv
+  ansible.builtin.pip:
+    name: platformio
+    state: present
+    virtualenv: "{{ esp32_pio_venv }}"
+    virtualenv_command: "python3 -m venv"
+  become_user: "{{ ansible_user }}"
+  become: true
+
+- name: Ensure ~/.local/bin exists for pio symlink
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.local/bin"
+    state: directory
+    mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Symlink pio and platformio into ~/.local/bin
+  ansible.builtin.file:
+    src: "{{ esp32_pio_venv }}/bin/{{ item }}"
+    path: "/home/{{ ansible_user }}/.local/bin/{{ item }}"
+    state: link
+  loop: [pio, platformio]
+  become_user: "{{ ansible_user }}"
+  become: true
+
+- name: Ensure PlatformIO udev rules are installed
+  ansible.builtin.copy:
+    src: files/99-platformio-udev.rules
+    dest: /etc/udev/rules.d/99-platformio-udev.rules
+    mode: "0644"
+    force: true
+
+- name: Reload udev rules
+  ansible.builtin.command: udevadm control --reload-rules
+
+- name: Trigger udev rules
+  ansible.builtin.command: udevadm trigger
+
+- name: Ensure PlatformIO toolchain PATH script exists
+  ansible.builtin.copy:
+    dest: "/home/{{ ansible_user }}/.platformio-path.sh"
+    content: |
+      # Add PlatformIO toolchain bins to PATH (used by pio build)
+      if [ -d "$HOME/.platformio/packages" ]; then
+        for _pio_bin in "$HOME/.platformio/packages"/toolchain-*/bin; do
+          [ -d "$_pio_bin" ] && PATH="$_pio_bin:$PATH"
+        done
+        unset _pio_bin
+      fi
+    mode: "0644"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Ensure PlatformIO PATH is sourced in bashrc
+  ansible.builtin.lineinfile:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    regexp: '\.platformio-path\.sh'
+    line: '[ -f "$HOME/.platformio-path.sh" ] && . "$HOME/.platformio-path.sh"'
+    create: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Print next steps
+  ansible.builtin.debug:
+    msg:
+      - "ESP32 dev environment ready. Ensure ~/.local/bin is in your PATH (e.g. export PATH=\"$HOME/.local/bin:$PATH\")."
+      - "Log out and back in (or run newgrp dialout) so dialout group takes effect."
+      - "Start a new login shell (or source ~/.bashrc) so toolchain PATH is set, then: pio run -e xiao_esp32s3"
+      - "Upload: pio run -e xiao_esp32s3 -t upload"
+      - "First run will download the ESP32 toolchain and libraries."

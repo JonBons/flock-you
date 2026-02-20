@@ -49,6 +49,34 @@ The button/AP daemon uses **BCM GPIO 17** with internal pull-up. Wire a momentar
 
 Short press toggles the WiFi AP (and shared-scan mode); long press (~3 s) triggers a clean shutdown. Change `button_gpio` or `long_press_seconds` in `group_vars/all.yml` if needed. When the AP is turned off (button or auto-disable), the daemon restarts the WiFi client (wpa_supplicant/dhcpcd) so the Pi rejoins your network and SSH is restored.
 
+## ESP32 build and upload (optional)
+
+To install everything needed to **compile and upload** the ESP32 firmware (PlatformIO, udev rules, serial access) on a **Linux** machine (your dev box or WSL):
+
+1. Create an inventory that defines the `esp32_dev` group. Example for localhost:
+
+   ```yaml
+   # inventory_esp32_dev.yml
+   esp32_dev:
+     hosts:
+       localhost:
+         ansible_connection: local
+         ansible_user: your_username
+   ```
+
+2. Run the playbook:
+
+   ```bash
+   cd setup
+   ansible-playbook -i inventory_esp32_dev.yml playbook_esp32_dev.yml
+   ```
+
+3. Ensure `~/.local/bin` is in your `PATH` (many distros add it automatically). Log out and back in (or run `newgrp dialout`) so the `dialout` group takes effect for USB serial.
+
+4. From the **repo root** (not `setup/`): `pio run -e xiao_esp32s3` to build, `pio run -e xiao_esp32s3 -t upload` to upload. The first run will download the ESP32 toolchain and libraries.
+
+See `inventory_esp32_dev.yml.example` for a ready-to-copy localhost example.
+
 ## If the Pi is unreachable after the first reboot
 
 - **Check the IP**: After a reboot, DHCP may assign a different address. Try the hostname (e.g. `ssh pi@flock-pi.local` or `ssh pi@flock_pi.local`) or look up the Pi’s lease in your router / access point.

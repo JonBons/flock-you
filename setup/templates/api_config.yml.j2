@@ -4,3 +4,10 @@ daily_detections_dir: {{ daily_detections_dir }}
 storage_quota_days: {{ storage_quota_days }}
 storage_quota_mb: {{ storage_quota_mb }}
 timezone: {{ timezone }}
+# Optional: auto-connect to these serial ports after startup (e.g. /dev/serial0, /dev/ttyUSB0)
+{% if gps_serial_port is defined and gps_serial_port %}
+gps_serial_port: {{ gps_serial_port }}
+{% endif %}
+{% if sniffer_serial_port is defined and sniffer_serial_port %}
+sniffer_serial_port: {{ sniffer_serial_port }}
+{% endif %}

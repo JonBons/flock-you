@@ -28,6 +28,13 @@
     group: "{{ ansible_user }}"
     recurse: true
 
+- name: Ensure API user is in dialout group for serial access
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: dialout
+    append: true
+  register: api_user_dialout
+
 - name: Ensure Python pip, venv, and packaging are installed (required by Ansible pip module)
   ansible.builtin.apt:
     name:
@@ -76,3 +83,10 @@
     state: started
     enabled: true
     daemon_reload: true
+
+- name: Restart flock-you-api so it runs with dialout
+  ansible.builtin.systemd:
+    name: flock-you-api
+    state: restarted
+    daemon_reload: true
+  when: api_user_dialout is changed
