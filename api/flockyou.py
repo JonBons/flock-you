@@ -558,12 +558,12 @@ def find_best_gps_match(detection_timestamp):
         return None
 
 def get_gps_port_candidate():
-    """Return the GPIO/serial0 port for GPS on Pi, or None."""
+    """Return the GPIO/ttyS0 port for GPS on Pi, or None."""
     ports = list(serial.tools.list_ports.comports())
     if not ports:
         return None
     for p in ports:
-        if p.device == '/dev/serial0':
+        if p.device == '/dev/ttyS0':
             return p.device
     for p in ports:
         d = (p.description or '') + (p.device or '')
@@ -847,41 +847,51 @@ def attempt_reconnect_flock():
     thread.start()
 
 def try_auto_connect_serial():
-    """Try to connect GPS (serial0) and Flock (JTAG) if not already set in settings."""
+    """Auto-connect to GPS and/or Sniffer (Flock) serial ports after startup.
+    Uses config gps_serial_port / sniffer_serial_port when set, otherwise falls back to
+    saved settings, then to auto-detection (ttyS0 for GPS, JTAG for sniffer)."""
     global serial_connection, gps_enabled, flock_serial_connection, flock_device_connected, flock_device_port, settings
     with app.app_context():
         time.sleep(2.5)
-        if not settings.get('gps_port'):
-            port = get_gps_port_candidate()
-            if port:
-                try:
-                    if serial_connection:
-                        serial_connection.close()
-                    serial_connection = serial.Serial(port, GPS_BAUDRATE, timeout=GPS_TIMEOUT)
-                    with connection_lock:
-                        gps_enabled = True
-                    settings['gps_port'] = port
+
+        # GPS: config-defined port, then saved setting, then auto-detect
+        gps_port = (APP_CONFIG.get('gps_serial_port') or '').strip() or settings.get('gps_port') or None
+        if not gps_port:
+            gps_port = get_gps_port_candidate()
+        if gps_port:
+            try:
+                if serial_connection:
+                    serial_connection.close()
+                serial_connection = serial.Serial(gps_port, GPS_BAUDRATE, timeout=GPS_TIMEOUT)
+                with connection_lock:
+                    gps_enabled = True
+                if gps_port != settings.get('gps_port'):
+                    settings['gps_port'] = gps_port
                     save_settings()
-                    threading.Thread(target=gps_reader, daemon=True).start()
-                    print(f"Auto-connected GPS on {port}")
-                except Exception as e:
-                    print(f"Auto-connect GPS failed: {e}")
-        if not settings.get('flock_port'):
-            port = get_jtag_port_candidate()
-            if port:
-                try:
-                    if flock_serial_connection and flock_serial_connection.is_open:
-                        flock_serial_connection.close()
-                    flock_serial_connection = serial.Serial(port, 115200, timeout=1)
-                    with connection_lock:
-                        flock_device_connected = True
-                    flock_device_port = port
-                    settings['flock_port'] = port
+                threading.Thread(target=gps_reader, daemon=True).start()
+                print(f"Auto-connected GPS on {gps_port}")
+            except Exception as e:
+                print(f"Auto-connect GPS failed ({gps_port}): {e}")
+
+        # Sniffer (Flock): config-defined port, then saved setting, then auto-detect JTAG
+        sniffer_port = (APP_CONFIG.get('sniffer_serial_port') or '').strip() or settings.get('flock_port') or None
+        if not sniffer_port:
+            sniffer_port = get_jtag_port_candidate()
+        if sniffer_port:
+            try:
+                if flock_serial_connection and flock_serial_connection.is_open:
+                    flock_serial_connection.close()
+                flock_serial_connection = serial.Serial(sniffer_port, 115200, timeout=1)
+                with connection_lock:
+                    flock_device_connected = True
+                flock_device_port = sniffer_port
+                if sniffer_port != settings.get('flock_port'):
+                    settings['flock_port'] = sniffer_port
                     save_settings()
-                    threading.Thread(target=flock_reader, daemon=True).start()
-                    print(f"Auto-connected Flock (JTAG) on {port}")
-                except Exception as e:
-                    print(f"Auto-connect Flock failed: {e}")
+                threading.Thread(target=flock_reader, daemon=True).start()
+                print(f"Auto-connected Sniffer on {sniffer_port}")
+            except Exception as e:
+                print(f"Auto-connect Sniffer failed ({sniffer_port}): {e}")
 
 def attempt_reconnect_gps():
     """Attempt to reconnect to GPS device"""
