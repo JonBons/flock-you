@@ -1,4 +1,12 @@
 # hostapd, dnsmasq, button/AP daemon (GPIO toggle + long-press shutdown)
+# Disable system dnsmasq so the button daemon can start dnsmasq for the AP without conflict
+- name: Stop and disable system dnsmasq (AP uses its own instance via button daemon)
+  ansible.builtin.systemd:
+    name: dnsmasq
+    state: stopped
+    enabled: false
+  ignore_errors: true  # may not exist or already disabled
+
 - name: Install hostapd dnsmasq and Python GPIO
   ansible.builtin.apt:
     name:
@@ -19,6 +27,13 @@
     regexp: '^#?DAEMON_CONF='
     line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
   register: hostapd_default
+
+# Unmask so the button daemon can start/stop hostapd on demand; keep disabled so it does not start at boot
+- name: Unmask hostapd and ensure disabled (button daemon controls it)
+  ansible.builtin.systemd:
+    name: hostapd
+    masked: false
+    enabled: false
 
 - name: Configure dnsmasq for AP (only when interface is up)
   ansible.builtin.template:

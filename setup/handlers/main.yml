@@ -1,3 +1,4 @@
+# Note: The main playbook defines these handlers inline. This file is kept for reference.
 - name: restart gpsd
   ansible.builtin.systemd:
     name: gpsd

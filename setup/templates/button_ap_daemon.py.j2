@@ -5,6 +5,8 @@ Flock You enclosure button daemon.
   - AP on  → stop AP, enable shared scan (Pi WiFi freed for scanning, ESP32 odd channels).
   - AP off → disable shared scan, start AP (Pi broadcasts config network again).
 - Long press ({{ long_press_seconds }}s): clean shutdown (stop services, then halt).
+- Toggle debounce: no AP toggle if last toggle was within {{ toggle_debounce_seconds }}s.
+- Auto-disable: AP turns off automatically after {{ ap_auto_disable_minutes }} minutes (0 = disabled).
 Runs as root so it can start/stop hostapd and shutdown.
 """
 import os
@@ -13,11 +15,14 @@ import time
 import signal
 import sys
 import json
+import threading
 import urllib.request
 import urllib.error
 
 GPIO_PIN = {{ button_gpio }}
 LONG_PRESS_SEC = {{ long_press_seconds }}
+TOGGLE_DEBOUNCE_SEC = {{ toggle_debounce_seconds }}
+AP_AUTO_DISABLE_SEC = {{ ap_auto_disable_minutes * 60 }}  # 0 = no auto-disable
 HOSTAPD_CONF = "/etc/hostapd/hostapd.conf"
 DNSMASQ_AP_CONF = "/etc/dnsmasq.d/flockyou-ap.conf"
 AP_INTERFACE = "{{ ap_interface }}"
@@ -44,6 +49,7 @@ def ap_running():
 
 def set_shared_scan(enabled):
     """Tell the API to enable or disable shared scan mode."""
+    print(f"[button_ap] set_shared_scan(enabled={enabled})", flush=True)
     try:
         req = urllib.request.Request(
             f"{API_BASE}/api/shared_scan",
@@ -52,21 +58,58 @@ def set_shared_scan(enabled):
             method="POST",
         )
         urllib.request.urlopen(req, timeout=5)
+        print(f"[button_ap] shared_scan -> {enabled} ok", flush=True)
     except Exception as e:
-        print(f"API shared_scan call failed: {e}", file=sys.stderr)
+        print(f"[button_ap] API shared_scan call failed: {e}", file=sys.stderr, flush=True)
+
+
+def _cancel_ap_auto_disable_timer():
+    global ap_auto_disable_timer
+    if ap_auto_disable_timer is not None:
+        ap_auto_disable_timer.cancel()
+        ap_auto_disable_timer = None
+        print("[button_ap] auto-disable timer cancelled", flush=True)
+
+
+def _ap_auto_disable_callback():
+    """Called by timer when AP has been up for AP_AUTO_DISABLE_SEC."""
+    global ap_auto_disable_timer
+    ap_auto_disable_timer = None
+    print(f"[button_ap] auto-disable: AP has been up {AP_AUTO_DISABLE_SEC}s, turning off", flush=True)
+    if ap_running():
+        ap_stop()
+        set_shared_scan(True)
 
 
 def ap_start():
+    global ap_auto_disable_timer
+    print("[button_ap] ap_start()", flush=True)
     if ap_running():
+        print("[button_ap] AP already running, skip start", flush=True)
         return
     # Bring up interface with static IP (handled by hostapd or we set it)
     run(f"ip addr add {{ ap_ip }}/24 dev {AP_INTERFACE} 2>/dev/null || true", check=False)
-    run("systemctl start hostapd")
+    try:
+        run("systemctl start hostapd")
+    except subprocess.CalledProcessError as e:
+        print(f"[button_ap] hostapd start failed: {e}", file=sys.stderr, flush=True)
+        if e.stderr:
+            print(f"[button_ap] stderr: {e.stderr.decode()}", file=sys.stderr, flush=True)
+        return
     run(f"dnsmasq -C {DNSMASQ_AP_CONF} -i {AP_INTERFACE} --pid-file=/run/dnsmasq-ap.pid", check=False)
-    run("systemctl start flock-you-api")  # ensure API is up
+    run("systemctl start flock-you-api", check=False)  # ensure API is up
+    print("[button_ap] AP started", flush=True)
+    if AP_AUTO_DISABLE_SEC > 0:
+        _cancel_ap_auto_disable_timer()
+        ap_auto_disable_timer = threading.Timer(AP_AUTO_DISABLE_SEC, _ap_auto_disable_callback)
+        ap_auto_disable_timer.daemon = True
+        ap_auto_disable_timer.start()
+        print(f"[button_ap] auto-disable timer set for {AP_AUTO_DISABLE_SEC}s", flush=True)
 
 
 def ap_stop():
+    _cancel_ap_auto_disable_timer()
+    print("[button_ap] ap_stop()", flush=True)
     run("systemctl stop hostapd", check=False)
     try:
         with open("/run/dnsmasq-ap.pid") as f:
@@ -75,9 +118,11 @@ def ap_stop():
     except Exception:
         pass
     run(f"ip addr flush dev {AP_INTERFACE}", check=False)
+    print("[button_ap] AP stopped", flush=True)
 
 
 def shutdown_system():
+    print("[button_ap] long press: shutting down", flush=True)
     run("systemctl stop flock-you-api")
     run("systemctl stop caddy", check=False)
     ap_stop()
@@ -86,19 +131,29 @@ def shutdown_system():
 
 
 long_press_triggered = False
+last_toggle_time = 0.0
+ap_auto_disable_timer = None
 
 
 def on_held():
     global long_press_triggered
     long_press_triggered = True
+    print("[button_ap] button held (long press) -> shutdown", flush=True)
     shutdown_system()
 
 
 def on_released():
-    global long_press_triggered
+    global long_press_triggered, last_toggle_time
     if long_press_triggered:
         return
     time.sleep(0.05)
+    now = time.monotonic()
+    elapsed = now - last_toggle_time
+    if last_toggle_time > 0 and elapsed < TOGGLE_DEBOUNCE_SEC:
+        print(f"[button_ap] button released: debounce ignore (last toggle {elapsed:.1f}s ago, need {TOGGLE_DEBOUNCE_SEC}s)", flush=True)
+        return
+    print(f"[button_ap] button released: toggle AP (debounce ok, elapsed={elapsed:.1f}s)", flush=True)
+    last_toggle_time = now
     if ap_running():
         # AP is on → turn off AP and enable shared scan (Pi WiFi freed for scanning)
         ap_stop()
@@ -110,9 +165,11 @@ def on_released():
 
 
 def main():
+    print(f"[button_ap] starting: GPIO={GPIO_PIN}, long_press={LONG_PRESS_SEC}s, toggle_debounce={TOGGLE_DEBOUNCE_SEC}s", flush=True)
     button = Button(GPIO_PIN, pull_up=True, hold_time=LONG_PRESS_SEC)
     button.when_held = on_held
     button.when_released = on_released
+    print("[button_ap] listening for button (short=toggle AP, long=shutdown)", flush=True)
     signal.pause()
 
 

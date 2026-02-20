@@ -1632,9 +1632,10 @@
             loadHealth();
             loadSharedScanState();
             
-            // Periodic status refresh every 5 seconds
+            // Periodic status refresh every 5 seconds (shared scan so UI reflects button presses)
             setInterval(loadStatus, 5000);
             setInterval(loadHealth, 5000);
+            setInterval(loadSharedScanState, 5000);
             
             // Periodic port refresh every 30 seconds (reduced from 10 seconds)
             setInterval(function() {

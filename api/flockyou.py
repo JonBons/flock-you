@@ -68,6 +68,8 @@ settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
 # Shared scan mode: Pi + ESP32 coordinate (ESP32 odd channels, Pi BLE scanner)
 shared_scan_enabled = False
 shared_scan_lock = threading.Lock()
+# When False, Pi sends full_channels: true so ESP32 uses 1-13 (no channel split); BLE doubling still applies
+PI_WIFI_AVAILABLE = APP_CONFIG.get('pi_wifi_available', False)
 
 # Detection patterns for Pi BLE scanner (mirror ESP32)
 PI_BLE_MAC_PREFIXES = (
@@ -411,6 +413,13 @@ def flock_reader():
                     attempt_reconnect_flock()
                     break
             time.sleep(0.1)
+
+def shared_scan_cmd(enabled):
+    """Build shared_scan command for ESP32. When Pi WiFi is unavailable, send full_channels so ESP32 uses 1-13."""
+    cmd = {'cmd': 'shared_scan', 'on': enabled}
+    if enabled and not PI_WIFI_AVAILABLE:
+        cmd['full_channels'] = True
+    return cmd
 
 def send_flock_command(cmd_dict):
     """Send a JSON command line to the Flock device (e.g. shared_scan toggle, time_sync)."""
@@ -819,7 +828,7 @@ def attempt_reconnect_flock():
                     flock_thread = threading.Thread(target=flock_reader, daemon=True)
                     flock_thread.start()
                     with shared_scan_lock:
-                        send_flock_command({'cmd': 'shared_scan', 'on': shared_scan_enabled})
+                        send_flock_command(shared_scan_cmd(shared_scan_enabled))
                         if shared_scan_enabled:
                             send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
                     return
@@ -1026,7 +1035,7 @@ def connect_flock():
         flock_thread.start()
         # Sync shared scan mode and time (for slot coordination) to ESP32
         with shared_scan_lock:
-            send_flock_command({'cmd': 'shared_scan', 'on': shared_scan_enabled})
+            send_flock_command(shared_scan_cmd(shared_scan_enabled))
             if shared_scan_enabled:
                 send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
         return jsonify({'status': 'success', 'message': f'Connected to Flock You device on {port}'})
@@ -1076,7 +1085,7 @@ def set_shared_scan():
     enabled = bool(data.get('enabled', False))
     with shared_scan_lock:
         shared_scan_enabled = enabled
-    send_flock_command({'cmd': 'shared_scan', 'on': enabled})
+    send_flock_command(shared_scan_cmd(enabled))
     if enabled:
         send_flock_command({'cmd': 'time_sync', 'unix_ts': time.time()})
         if _time_sync_thread is None or not _time_sync_thread.is_alive():

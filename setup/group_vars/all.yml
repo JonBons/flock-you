@@ -23,12 +23,14 @@ timezone: "UTC"
 
 # Button/AP daemon (GPIO BCM numbering)
 button_gpio: 17
-long_press_seconds: 3
+long_press_seconds: 5
+toggle_debounce_seconds: 10  # ignore short-press toggle if last toggle was < this ago
 
 # WiFi AP (for enclosure button toggle)
 ap_ssid: "FlockYou-Config"
 ap_passphrase: "flockyou-config"   # Override with -e ap_passphrase=yourpass or vault
 ap_interface: "wlan0"
+ap_auto_disable_minutes: 10  # turn off AP after this many minutes (0 = no auto-disable)
 ap_ip: "192.168.4.1"
 ap_netmask: "255.255.255.0"
 ap_dhcp_range: "192.168.4.10,192.168.4.50,24h"

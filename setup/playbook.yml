@@ -29,7 +29,7 @@
   hosts: all
   become: true
   vars:
-    reboot_after_setup: true   # set -e reboot_after_setup=false to skip final reboot
+    reboot_after_setup: true   # override: -e reboot_after_setup=false to skip final reboot
   tasks:
     - ansible.builtin.include_tasks: tasks/app_deploy.yml
     - ansible.builtin.include_tasks: tasks/caddy.yml
