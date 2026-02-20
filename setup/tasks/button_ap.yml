@@ -20,6 +20,7 @@
     src: hostapd.conf.j2
     dest: /etc/hostapd/hostapd.conf
     mode: "0600"
+  tags: [templates]
 
 - name: Set hostapd daemon config
   ansible.builtin.lineinfile:
@@ -27,6 +28,12 @@
     regexp: '^#?DAEMON_CONF='
     line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
   register: hostapd_default
+
+- name: Set DAEMON_OPTS to avoid hostapd.service unset variable warning
+  ansible.builtin.lineinfile:
+    path: /etc/default/hostapd
+    regexp: '^#?DAEMON_OPTS='
+    line: 'DAEMON_OPTS=""'
 
 # Unmask so the button daemon can start/stop hostapd on demand; keep disabled so it does not start at boot
 - name: Unmask hostapd and ensure disabled (button daemon controls it)
@@ -40,6 +47,7 @@
     src: dnsmasq_ap.conf.j2
     dest: /etc/dnsmasq.d/flockyou-ap.conf
     mode: "0644"
+  tags: [templates]
 
 - name: Disable dnsmasq from main config (we start it manually with -x for AP)
   ansible.builtin.lineinfile:
@@ -55,12 +63,14 @@
     mode: "0755"
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
+  tags: [templates]
 
 - name: Install flock-you-button-ap systemd unit
   ansible.builtin.template:
     src: flock_you_button_ap.service.j2
     dest: /etc/systemd/system/flock-you-button-ap.service
     mode: "0644"
+  tags: [templates]
 
 - name: Enable and start button/AP daemon
   ansible.builtin.systemd:

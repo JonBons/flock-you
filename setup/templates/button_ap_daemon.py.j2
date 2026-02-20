@@ -41,8 +41,8 @@ def run(cmd, check=True):
 
 def ap_running():
     try:
-        run("systemctl is-active --quiet hostapd", check=False)
-        return True
+        r = run("systemctl is-active --quiet hostapd", check=False)
+        return r.returncode == 0
     except Exception:
         return False
 
@@ -87,6 +87,8 @@ def ap_start():
     if ap_running():
         print("[button_ap] AP already running, skip start", flush=True)
         return
+    # So NetworkManager doesn't steal wlan0 back and reassociate to the previous network
+    run(f"nmcli device set {AP_INTERFACE} managed no", check=False)
     # Bring up interface with static IP (handled by hostapd or we set it)
     run(f"ip addr add {{ ap_ip }}/24 dev {AP_INTERFACE} 2>/dev/null || true", check=False)
     try:
@@ -118,6 +120,16 @@ def ap_stop():
     except Exception:
         pass
     run(f"ip addr flush dev {AP_INTERFACE}", check=False)
+    # Give wlan0 back to NetworkManager so it can reconnect to the previous network
+    run(f"nmcli device set {AP_INTERFACE} managed yes", check=False)
+    time.sleep(1)  # let NM pick up the device before asking for reconnect
+    run(f"nmcli device reconnect {AP_INTERFACE}", check=False)
+    # Only restart wpa_supplicant/dhcpcd when NetworkManager isn't running (e.g. dhcpcd-only Pi);
+    # on NM systems restarting them kills the connection NM is establishing
+    nm_r = run("systemctl is-active --quiet NetworkManager", check=False)
+    if nm_r.returncode != 0:
+        run("systemctl restart wpa_supplicant", check=False)
+        run("systemctl restart dhcpcd", check=False)
     print("[button_ap] AP stopped", flush=True)
 
 

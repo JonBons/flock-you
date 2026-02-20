@@ -29,6 +29,9 @@ Optional: override variables in **`group_vars/all.yml`** or via `-e` (e.g. `ap_p
    To skip the final reboot:  
    `ansible-playbook -i inventory.yml playbook.yml -e reboot_after_setup=false`
 
+   To only update templated config files (no packages, git, or reboot):  
+   `ansible-playbook -i inventory.yml playbook.yml --tags templates`
+
 The playbook will:
 
 1. Configure serial and PPS (config.txt, cmdline.txt), install gpsd/chrony, then **reboot** the Pi.
@@ -44,7 +47,7 @@ The button/AP daemon uses **BCM GPIO 17** with internal pull-up. Wire a momentar
 - **GPIO 17** → **Physical pin 11** (40-pin header)
 - **GND** → e.g. **Physical pin 6, 9, or 14**
 
-Short press toggles the WiFi AP (and shared-scan mode); long press (~3 s) triggers a clean shutdown. Change `button_gpio` or `long_press_seconds` in `group_vars/all.yml` if needed.
+Short press toggles the WiFi AP (and shared-scan mode); long press (~3 s) triggers a clean shutdown. Change `button_gpio` or `long_press_seconds` in `group_vars/all.yml` if needed. When the AP is turned off (button or auto-disable), the daemon restarts the WiFi client (wpa_supplicant/dhcpcd) so the Pi rejoins your network and SSH is restored.
 
 ## If the Pi is unreachable after the first reboot
 

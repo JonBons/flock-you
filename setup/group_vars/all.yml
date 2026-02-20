@@ -11,7 +11,9 @@ flask_port: 5000
 caddy_https_port: 443
 caddy_http_port: 80
 # Hostname or IP Caddy listens on (e.g. for tls internal). Use IP or flock-pi.local.
-caddy_server_name: "192.168.4.1"  # AP IP when using Pi as hotspot; or use actual hostname
+caddy_server_name: "192.168.4.1"  # AP IP when using Pi as hotspot
+# When Pi is on home WiFi, use this so Caddy also serves there (e.g. flock-pi.local or Pi's LAN IP).
+caddy_home_server_name: "172.20.10.248"  # set to empty string or omit to only serve on AP
 
 # Paths (relative to app_root/api when deployed)
 daily_detections_dir: "data/detections"
@@ -31,6 +33,7 @@ ap_ssid: "FlockYou-Config"
 ap_passphrase: "flockyou-config"   # Override with -e ap_passphrase=yourpass or vault
 ap_interface: "wlan0"
 ap_auto_disable_minutes: 10  # turn off AP after this many minutes (0 = no auto-disable)
+ap_country_code: "US"   # ISO 3166-1 alpha-2 (e.g. US, GB, DE); required for AP to broadcast
 ap_ip: "192.168.4.1"
 ap_netmask: "255.255.255.0"
 ap_dhcp_range: "192.168.4.10,192.168.4.50,24h"

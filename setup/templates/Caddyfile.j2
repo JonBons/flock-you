@@ -1,9 +1,11 @@
 # Flock You - self-signed only, no ACME. HTTP -> HTTPS redirect.
+# Redirect preserves host so home clients get https://flock-pi.local, AP clients https://192.168.4.1.
 :{{ caddy_http_port }} {
     redir https://{host}{uri} permanent
 }
 
-:{{ caddy_https_port }} {
+# Serve on AP IP and optionally on home LAN (caddy_home_server_name). Each gets its own tls internal cert.
+https://{{ caddy_server_name }}:{{ caddy_https_port }}{% if caddy_home_server_name | default('') | trim %}, https://{{ caddy_home_server_name }}:{{ caddy_https_port }}{% endif %} {
     tls internal
     reverse_proxy localhost:{{ flask_port }}
 }

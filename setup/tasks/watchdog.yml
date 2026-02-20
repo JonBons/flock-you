@@ -4,12 +4,14 @@
     src: watchdog_api.sh.j2
     dest: /usr/local/bin/flock-you-watchdog.sh
     mode: "0755"
+  tags: [templates]
 
 - name: Create watchdog timer and service
   ansible.builtin.template:
     src: flock_you_watchdog.service.j2
     dest: /etc/systemd/system/flock-you-watchdog.service
     mode: "0644"
+  tags: [templates]
 
 - name: Install watchdog timer
   ansible.builtin.copy:

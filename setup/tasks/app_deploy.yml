@@ -61,12 +61,14 @@
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
     mode: "0644"
+  tags: [templates]
 
 - name: Install flock-you-api systemd unit
   ansible.builtin.template:
     src: flock_you_api.service.j2
     dest: /etc/systemd/system/flock-you-api.service
     mode: "0644"
+  tags: [templates]
 
 - name: Enable and start flock-you-api
   ansible.builtin.systemd:

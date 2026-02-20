@@ -17,6 +17,7 @@
       when: not serial_pps_rebooting | default(false)
   tasks:
     - ansible.builtin.include_tasks: tasks/serial_pps.yml
+      tags: [templates]
 
 - name: Wait for Pi after reboot
   hosts: all
@@ -32,9 +33,13 @@
     reboot_after_setup: true   # override: -e reboot_after_setup=false to skip final reboot
   tasks:
     - ansible.builtin.include_tasks: tasks/app_deploy.yml
+      tags: [templates]
     - ansible.builtin.include_tasks: tasks/caddy.yml
+      tags: [templates]
     - ansible.builtin.include_tasks: tasks/watchdog.yml
+      tags: [templates]
     - ansible.builtin.include_tasks: tasks/button_ap.yml
+      tags: [templates]
     - name: Reboot to apply all services
       ansible.builtin.reboot:
         msg: "Flock You setup complete"

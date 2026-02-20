@@ -50,6 +50,7 @@
     src: gpsd_default.j2
     dest: /etc/default/gpsd
   notify: restart gpsd
+  tags: [templates]
 
 - name: Configure chrony refclocks (SHM + PPS)
   ansible.builtin.template:
@@ -57,6 +58,7 @@
     dest: /etc/chrony/chrony.conf
   register: chrony_config
   notify: restart chrony
+  tags: [templates]
 
 - name: Set fact when we are about to reboot (PPS /dev/pps0 not available until after reboot)
   ansible.builtin.set_fact:
